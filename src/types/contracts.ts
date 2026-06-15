@@ -8,7 +8,17 @@ export type SourceKind =
   | "veyra"
   | "lmstudio"
   | "oai_proxy"
-  | "manual";
+  | "manual"
+  | "cursor";
+
+export interface CursorConnectionStatus {
+  connected: boolean;
+  email_or_user_label: string | null;
+  expires_at: string | null;
+  last_sync_at: string | null;
+  last_sync_result: string | null;
+  events_total: number;
+}
 
 export interface Source {
   id: number;

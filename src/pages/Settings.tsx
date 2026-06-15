@@ -5,12 +5,13 @@ import {
   cleanupRawEvents, vacuumDb, resetAllData, exportCsv, exportJson, backupDb,
   listPricing, upsertPricing, deletePricing, importPricingJson, exportPricing,
   listMissingPricing, recalculateCosts, confirmDialog, isTauri,
+  cursorStartLogin, cursorDisconnect, cursorGetStatus, cursorSyncNow, cursorConnectWithToken,
 } from "@/lib/tauri";
-import type { AppSettings, Source, ModelPricing } from "@/types/contracts";
+import type { AppSettings, Source, ModelPricing, CursorConnectionStatus } from "@/types/contracts";
 import type { MissingPricingRow } from "@/lib/tauri";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, Switch, Button, Input, Label, Badge, Skeleton, Separator, Tabs, TabsList, TabsTrigger, TabsContent, Textarea } from "@/components/ui/primitives";
-import { Plus, Trash2, ScanLine, Play, Square, Database, FileDown, FileUp, Wand2, ListChecks, Save, RefreshCw, AlertTriangle } from "lucide-react";
+import { Plus, Trash2, ScanLine, Play, Square, Database, FileDown, FileUp, Wand2, ListChecks, Save, RefreshCw, AlertTriangle, Link2, Unlink } from "lucide-react";
 import { toast } from "@/stores/toast";
 import { formatUsd, formatNumber } from "@/lib/utils";
 
@@ -27,6 +28,19 @@ export function Settings() {
   const [missing, setMissing] = useState<MissingPricingRow[] | null>(null);
   const [scanningIds, setScanningIds] = useState<Set<number>>(new Set());
   const [heavyOp, setHeavyOp] = useState(false);
+  const [cursorStatus, setCursorStatus] = useState<CursorConnectionStatus | null>(null);
+  const [cursorSyncing, setCursorSyncing] = useState(false);
+  const [cursorTokenOpen, setCursorTokenOpen] = useState(false);
+  const [cursorToken, setCursorToken] = useState("");
+
+  const reloadCursor = async () => {
+    try {
+      const st = await cursorGetStatus();
+      setCursorStatus(st);
+    } catch {
+      setCursorStatus(null);
+    }
+  };
 
   const reload = async () => {
     const [s, src, w, sz, pr] = await Promise.all([
@@ -37,9 +51,36 @@ export function Settings() {
     setWatchers(w);
     setSize(sz);
     setPricing(pr);
+    await reloadCursor();
   };
 
   useEffect(() => { reload().catch(() => {}); }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlistenConnected: (() => void) | undefined;
+    let unlistenSync: (() => void) | undefined;
+    let unlistenLoginOk: (() => void) | undefined;
+    let unlistenLoginErr: (() => void) | undefined;
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlistenConnected = await listen("cursor-connected", () => { reloadCursor().catch(() => {}); });
+      unlistenSync = await listen("cursor-sync-complete", () => { reload().catch(() => {}); });
+      unlistenLoginOk = await listen("cursor-login-success", () => {
+        toast({ title: "Cursor connected", variant: "success" });
+        reload().catch(() => {});
+      });
+      unlistenLoginErr = await listen<string>("cursor-login-error", (e) => {
+        toast({ title: "Cursor sign-in failed", description: e.payload, variant: "destructive" });
+      });
+    })().catch(() => {});
+    return () => {
+      unlistenConnected?.();
+      unlistenSync?.();
+      unlistenLoginOk?.();
+      unlistenLoginErr?.();
+    };
+  }, []);
 
   const save = async (next: AppSettings) => {
     try {
@@ -118,6 +159,61 @@ export function Settings() {
       reload();
     } catch (e: any) {
       toast({ title: "Discovery failed", description: String(e), variant: "destructive" });
+    }
+  };
+
+  const onCursorConnect = async () => {
+    try {
+      await cursorStartLogin();
+      toast({ title: "Cursor sign-in opened", description: "Complete sign-in in the window that appears." });
+    } catch (e: any) {
+      toast({ title: "Connect failed", description: String(e), variant: "destructive" });
+    }
+  };
+
+  const onCursorTokenConnect = async () => {
+    if (!cursorToken.trim()) return;
+    try {
+      await cursorConnectWithToken(cursorToken.trim());
+      setCursorToken("");
+      setCursorTokenOpen(false);
+      toast({ title: "Cursor connected", variant: "success" });
+      reload();
+    } catch (e: any) {
+      toast({ title: "Token connect failed", description: String(e), variant: "destructive" });
+    }
+  };
+
+  const onCursorSync = async () => {
+    if (cursorSyncing) return;
+    setCursorSyncing(true);
+    try {
+      const r = await cursorSyncNow();
+      toast({
+        title: "Cursor sync complete",
+        description: `${r.events_inserted} inserted, ${r.events_skipped_duplicate} duplicates (${r.duration_ms}ms)`,
+        variant: r.events_inserted > 0 ? "success" : "default",
+      });
+      reload();
+    } catch (e: any) {
+      toast({ title: "Cursor sync failed", description: String(e), variant: "destructive" });
+    } finally {
+      setCursorSyncing(false);
+    }
+  };
+
+  const onCursorDisconnect = async () => {
+    const ok = await confirmDialog("Disconnect your Cursor account from TokenLens?", {
+      title: "Disconnect Cursor",
+      kind: "warning",
+    });
+    if (!ok) return;
+    try {
+      await cursorDisconnect();
+      toast({ title: "Cursor disconnected" });
+      reload();
+    } catch (e: any) {
+      toast({ title: "Disconnect failed", description: String(e), variant: "destructive" });
     }
   };
 
@@ -356,6 +452,67 @@ export function Settings() {
 
         {/* SOURCES */}
         <TabsContent value="sources">
+          <Card className="mb-3">
+            <CardHeader>
+              <CardTitle className="text-sm">Cursor</CardTitle>
+              <CardDescription>
+                Sign in to pull usage events from your Cursor account. Token counts are exact;
+                included-plan usage shows API-equivalent cost estimates.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {cursorStatus?.connected ? (
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-md border bg-card">
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <div className="font-medium text-sm">{cursorStatus.email_or_user_label ?? "Cursor account"}</div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="success">connected</Badge>
+                      {cursorStatus.expires_at ? (
+                        <span className="text-[10px] text-muted-foreground">expires {cursorStatus.expires_at}</span>
+                      ) : null}
+                      {cursorStatus.last_sync_at ? (
+                        <span className="text-[10px] text-muted-foreground">last sync {cursorStatus.last_sync_at}</span>
+                      ) : null}
+                    </div>
+                    {cursorStatus.last_sync_result ? (
+                      <div className="text-[10px] text-muted-foreground">{cursorStatus.last_sync_result}</div>
+                    ) : null}
+                    <div className="text-[10px] text-muted-foreground">{formatNumber(cursorStatus.events_total)} events imported</div>
+                  </div>
+                  <Button variant="outline" size="sm" disabled={cursorSyncing} onClick={onCursorSync}>
+                    {cursorSyncing ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    {cursorSyncing ? " Syncing…" : " Sync now"}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={onCursorDisconnect}>
+                    <Unlink className="h-3.5 w-3.5 text-destructive" />
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Button onClick={onCursorConnect}>
+                    <Link2 className="h-3.5 w-3.5" /> Connect Cursor
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setCursorTokenOpen((v) => !v)}>
+                    Advanced: paste session token
+                  </Button>
+                  {cursorTokenOpen ? (
+                    <div className="space-y-2 pt-1">
+                      <Textarea
+                        placeholder="WorkosCursorSessionToken from browser DevTools → Application → Cookies"
+                        value={cursorToken}
+                        onChange={(e) => setCursorToken(e.target.value)}
+                        className="min-h-[60px] text-xs"
+                      />
+                      <Button size="sm" variant="outline" onClick={onCursorTokenConnect} disabled={!cursorToken.trim()}>
+                        Connect with token
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">Data sources</CardTitle>

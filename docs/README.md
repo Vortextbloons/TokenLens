@@ -2,6 +2,14 @@
 
 **Local-first AI token and cost analytics.** A Tauri v2 desktop app for understanding how many AI tokens you use, where they go, and what they cost. Runs entirely on your machine. No cloud. No AI calls. No telemetry.
 
+## Screenshots
+
+![Overview](../docs/screenshots/overview-dark.png)
+
+See [`../README.md`](../README.md) for the full screenshot gallery.
+
+## Architecture
+
 ```
 +------------------------+        +-------------------------+        +----------------------+
 | Sources (logs, JSONL)  |  --->  | Collectors + Normalizer |  --->  | SQLite (events, etc) |
@@ -22,7 +30,7 @@ npm install
 npm run tauri:dev
 ```
 
-That opens a desktop window. Click **Samples** in the topbar to populate the dashboard with synthetic data, or add a real source under **Settings → Sources**.
+That opens a desktop window. Click **Generate sample data** on the Overview page to populate the dashboard with synthetic data, or add a real source under **Settings → Sources**.
 
 For a full release build (installers, msi, etc.):
 
@@ -45,9 +53,7 @@ The output binary lives in `src-tauri/target/release/`.
 | State | Zustand + persist |
 | Optional plugin | TypeScript (no deps, JSONL-only) |
 
-## Architecture
-
-The app follows the three-stage pipeline from the original plan:
+## Pipeline
 
 1. **Sources** — log folders, JSONL inbox, or a local OAI-compatible proxy. TokenLens never writes to your source folders.
 2. **Collectors + Normalizer** — file scanner, file watcher, JSONL inbox scanner. Each event is normalized to a canonical `UsageEvent`, SHA-256-hashed, and persisted.
@@ -92,9 +98,8 @@ Three ways to bring OpenCode data in:
 ```
 tokenlens/
 ├─ src/                       React + TS frontend
-│  ├─ app/
 │  ├─ components/             layout, ui primitives, cards
-│  ├─ pages/                  Overview, Sessions, Projects, Models, …
+│  ├─ pages/                  Overview, Sessions, SessionDetail, Projects, Models, …
 │  ├─ charts/                 Recharts wrappers
 │  ├─ stores/                 Zustand stores
 │  ├─ lib/                    tauri invoke wrapper, utils, mock backend
@@ -113,18 +118,23 @@ tokenlens/
 │  │  ├─ token_estimator/     chars/4 fallback
 │  │  └─ types.rs             shared types
 │  ├─ migrations/             SQL migrations
-│  └─ tests/fixtures/         sample log data
+│  └─ tests/                  Rust unit tests + fixtures
 ├─ collectors/opencode-plugin/   tiny TypeScript plugin
-└─ docs/                      architecture, data model, privacy
+└─ docs/                      architecture, data model, privacy, design notes
 ```
 
 ## Testing
 
 ```bash
-cd src-tauri && cargo test --lib     # 17 unit tests for normalizer, dedup, redaction, estimator
+cd src-tauri && cargo test --lib     # Rust unit tests: normalizer, dedup, redaction, estimator
 ```
 
-## Roadmap (per plan.md)
+```bash
+npm run lint                          # ESLint
+npm run typecheck                     # tsc --noEmit
+```
+
+## Roadmap (per [docs/plan.md](docs/plan.md))
 
 - [x] Phase 1 — MVP: passive import, dashboard, sessions, models
 - [x] Phase 2 — Live collection, settings, storage cleanup, exports
@@ -134,4 +144,4 @@ cd src-tauri && cargo test --lib     # 17 unit tests for normalizer, dedup, reda
 
 ## License
 
-MIT — see `LICENSE`.
+No license file is provided. All rights reserved by the author. See the repository root for details.

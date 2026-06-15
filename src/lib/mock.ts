@@ -4,6 +4,7 @@
 import type {
   AppSettings,
   Breakdown,
+  CursorConnectionStatus,
   ModelPricing,
   OverviewStats,
   QueryFilter,
@@ -67,6 +68,57 @@ const SESSIONS: Session[] = Array.from({ length: 12 }, (_, i) => ({
   raw_ref: null,
 }));
 
+const PRICING: ModelPricing[] = [
+  {
+    id: 1, provider: "openai", model: "gpt-4o",
+    input_price_per_million: 2.5, output_price_per_million: 10.0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 1.25,
+    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 2, provider: "anthropic", model: "claude-sonnet-4-5",
+    input_price_per_million: 3.0, output_price_per_million: 15.0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.30,
+    cache_write_price_per_million: 3.75, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 3, provider: "google", model: "gemini-2.5-flash",
+    input_price_per_million: 0.30, output_price_per_million: 2.50,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.03,
+    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 4, provider: "local", model: "any",
+    input_price_per_million: 0, output_price_per_million: 0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0,
+    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
+    is_local: true, source: "seed", updated_at: ago(7),
+  },
+];
+
+const SETTINGS: AppSettings = {
+  currency: "USD",
+  autostart: false,
+  start_minimized: false,
+  theme: "system",
+  store_raw_json: true,
+  store_message_text: false,
+  redact_secrets: true,
+  anonymize_paths: false,
+  raw_retention_days: 14,
+  max_db_size_mb: 0,
+  auto_cleanup: true,
+  default_range: "7d",
+  missing_price_behavior: "warn",
+  token_estimation_mode: "chars4",
+  watcher_enabled: true,
+  debug_logging: false,
+  collector_endpoint_enabled: false,
+};
+
 function makeEvents(): UsageEvent[] {
   const out: UsageEvent[] = [];
   let id = 0;
@@ -122,57 +174,6 @@ function makeEvents(): UsageEvent[] {
 }
 
 const EVENTS = makeEvents();
-
-const PRICING: ModelPricing[] = [
-  {
-    id: 1, provider: "openai", model: "gpt-4o",
-    input_price_per_million: 2.5, output_price_per_million: 10.0,
-    reasoning_price_per_million: 0, cache_read_price_per_million: 1.25,
-    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
-    is_local: false, source: "seed", updated_at: ago(7),
-  },
-  {
-    id: 2, provider: "anthropic", model: "claude-sonnet-4-5",
-    input_price_per_million: 3.0, output_price_per_million: 15.0,
-    reasoning_price_per_million: 0, cache_read_price_per_million: 0.30,
-    cache_write_price_per_million: 3.75, currency: "USD", effective_date: null,
-    is_local: false, source: "seed", updated_at: ago(7),
-  },
-  {
-    id: 3, provider: "google", model: "gemini-2.5-flash",
-    input_price_per_million: 0.30, output_price_per_million: 2.50,
-    reasoning_price_per_million: 0, cache_read_price_per_million: 0.03,
-    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
-    is_local: false, source: "seed", updated_at: ago(7),
-  },
-  {
-    id: 4, provider: "local", model: "any",
-    input_price_per_million: 0, output_price_per_million: 0,
-    reasoning_price_per_million: 0, cache_read_price_per_million: 0,
-    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
-    is_local: true, source: "seed", updated_at: ago(7),
-  },
-];
-
-const SETTINGS: AppSettings = {
-  currency: "USD",
-  autostart: false,
-  start_minimized: false,
-  theme: "system",
-  store_raw_json: true,
-  store_message_text: false,
-  redact_secrets: true,
-  anonymize_paths: false,
-  raw_retention_days: 14,
-  max_db_size_mb: 0,
-  auto_cleanup: true,
-  default_range: "7d",
-  missing_price_behavior: "warn",
-  token_estimation_mode: "chars4",
-  watcher_enabled: true,
-  debug_logging: false,
-  collector_endpoint_enabled: false,
-};
 
 function matchDimensionFilter(f: QueryFilter | undefined, ev: UsageEvent): boolean {
   if (!f) return true;
@@ -537,4 +538,22 @@ export const MOCK_BACKEND: Record<string, (args: any) => any> = {
   acknowledge_alert: () => undefined,
   evaluate_budgets_command: () => 0,
   scan_inbox: () => ({ files_scanned: 0, events_inserted: 0, events_skipped_duplicate: 0, errors: [], duration_ms: 0 }),
+  cursor_start_login: async () => undefined,
+  cursor_connect_with_token: async () => undefined,
+  cursor_disconnect: () => undefined,
+  cursor_get_status: (): CursorConnectionStatus => ({
+    connected: false,
+    email_or_user_label: null,
+    expires_at: null,
+    last_sync_at: null,
+    last_sync_result: null,
+    events_total: 0,
+  }),
+  cursor_sync_now: (): ScanResult => ({
+    files_scanned: 1,
+    events_inserted: 0,
+    events_skipped_duplicate: 0,
+    errors: [],
+    duration_ms: 42,
+  }),
 };

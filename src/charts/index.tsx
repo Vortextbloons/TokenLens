@@ -109,7 +109,9 @@ export function ProviderDonut({ data }: { data: Breakdown[] }) {
           {top.map((_, i) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
         </Pie>
         <Tooltip
-          contentStyle={{ backgroundColor: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+          contentStyle={{ backgroundColor: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12, color: "hsl(var(--popover-foreground))" }}
+          labelStyle={{ color: "hsl(var(--popover-foreground))" }}
+          itemStyle={{ color: "hsl(var(--popover-foreground))" }}
           formatter={(v: any) => formatNumber(Number(v))}
         />
       </PieChart>

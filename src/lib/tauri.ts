@@ -4,6 +4,7 @@
 import type {
   AppSettings,
   Breakdown,
+  CursorConnectionStatus,
   ModelPricing,
   OverviewStats,
   QueryFilter,
@@ -47,6 +48,16 @@ export const stopWatcher = (id: number) => invoke<void>("stop_watcher", { id });
 export const listWatchers = () => invoke<[number, string][]>("list_watchers");
 export const discoverDefaultSources = () =>
   invoke<Source[]>("discover_default_sources");
+
+// ----------------- Cursor -----------------
+
+export const cursorStartLogin = () => invoke<void>("cursor_start_login");
+export const cursorConnectWithToken = (token: string) =>
+  invoke<void>("cursor_connect_with_token", { token });
+export const cursorDisconnect = () => invoke<void>("cursor_disconnect");
+export const cursorGetStatus = () =>
+  invoke<CursorConnectionStatus>("cursor_get_status");
+export const cursorSyncNow = () => invoke<ScanResult>("cursor_sync_now");
 
 // ----------------- Analytics -----------------
 
