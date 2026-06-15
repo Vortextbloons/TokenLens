@@ -52,7 +52,7 @@
       "endpoints": [
         "https://github.com/Vortextbloons/TokenLens/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM5REE0MDYwMDdCMEQ2MkQKUldRdDFyQUhZRURheWNWK1dESDRoNUVramk5OUlxalZSV2pCUE1sSk96SU5tMnc4Qk5QeWNLT3MK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMwRDQ5NDNCNjQxRjg2NkEKUldScWhoOWtPNVRVTUFFWHh4VDRFQjk1ai9GeVdURllZeHh1SlJib1ExNmJ4VWVjN3Nxejk5eDMK",
       "windows": {
         "installMode": "passive"
       }
