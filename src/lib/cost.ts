@@ -20,6 +20,7 @@ const AGGREGATOR_ALIASES: Record<string, ProviderAlias[]> = {
         "qwen3.7-max": "qwen-3.7-max",
         "qwen3.7-plus": "qwen-3.7-plus",
         "qwen3.6-plus": "qwen-3.6-plus",
+        "qwen3.5-plus": "qwen-3.5-plus",
       },
     },
   ],
