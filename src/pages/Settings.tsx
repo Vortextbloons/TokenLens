@@ -700,7 +700,7 @@ export function Settings() {
           <Card className="mt-4">
             <CardHeader>
               <CardTitle className="text-sm">Model pricing</CardTitle>
-              <CardDescription>Per-million-token rates used to compute cost. Edit, add custom, or remove.</CardDescription>
+              <CardDescription>Per-million-token rates for model vendors (OpenAI, Anthropic, etc.). Apps like OpenCode and Cursor resolve costs via these underlying models.</CardDescription>
             </CardHeader>
             <CardContent className="p-0">
               <table className="w-full text-sm">
@@ -717,7 +717,7 @@ export function Settings() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pricing.filter((p) => !["opencode-go", "opencode", "github-copilot", "cursor"].includes(p.provider)).map((p) => (
+                  {pricing.map((p) => (
                     <tr key={`${p.provider}-${p.model}`} className="border-b hover:bg-muted/30">
                       <td className="p-3 font-medium">{p.provider}</td>
                       <td className="p-3">{p.model}</td>

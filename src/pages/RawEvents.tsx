@@ -6,7 +6,7 @@ import type { UsageEvent, ModelPricing } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle, Skeleton, Badge, Input, Select } from "@/components/ui/primitives";
 import { Search, Copy, Check } from "lucide-react";
-import { formatDate, formatNumber, formatUsd, exactnessColor } from "@/lib/utils";
+import { formatDate, formatNumber, formatUsd, exactnessColor, formatExactness } from "@/lib/utils";
 import { EmptyState } from "@/components/layout/PageHeader";
 
 export function RawEvents() {
@@ -63,8 +63,8 @@ export function RawEvents() {
           options={[
             { value: "any", label: "Any exactness" },
             { value: "exact", label: "Exact only" },
-            { value: "estimated", label: "Estimated" },
-            { value: "mixed", label: "Mixed" },
+            { value: "mixed", label: "Exact tokens" },
+            { value: "estimated", label: "Est. cost" },
             { value: "unknown", label: "Unknown" },
           ]}
         />
@@ -89,7 +89,7 @@ export function RawEvents() {
                     <span className="font-medium flex-1 truncate">{e.model ?? e.provider ?? "(unknown)"}</span>
                     <span className="text-muted-foreground">{e.message_role ?? ""}</span>
                     <span className="tabular-nums w-20 text-right">{formatNumber(e.total_tokens)}</span>
-                    <span className={`tabular-nums w-16 text-right ${exactnessColor(e.exactness)}`}>{e.exactness[0].toUpperCase()}</span>
+                    <span className={`tabular-nums w-20 text-right text-xs ${exactnessColor(e.exactness)}`}>{formatExactness(e.exactness)}</span>
                   </button>
                 ))}
               </div>
@@ -115,7 +115,7 @@ export function RawEvents() {
                   <div><div className="text-muted-foreground">Provider</div><div>{selected.provider ?? "—"}</div></div>
                   <div><div className="text-muted-foreground">Model</div><div className="truncate">{selected.model ?? "—"}</div></div>
                   <div><div className="text-muted-foreground">Role</div><div>{selected.message_role ?? "—"}</div></div>
-                  <div><div className="text-muted-foreground">Exactness</div><div className={exactnessColor(selected.exactness)}>{selected.exactness}</div></div>
+                  <div><div className="text-muted-foreground">Exactness</div><div className={exactnessColor(selected.exactness)}>{formatExactness(selected.exactness)}</div></div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div><div className="text-muted-foreground">Input</div><div className="tabular-nums">{formatNumber(selected.input_tokens)}</div></div>

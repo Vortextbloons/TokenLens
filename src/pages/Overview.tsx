@@ -297,13 +297,13 @@ export function Overview() {
                   <div className="text-amber-500 text-2xl font-semibold tabular-nums">
                     {formatNumber(stats!.exactness_mix.estimated)}
                   </div>
-                  <div className="text-xs text-muted-foreground">Estimated events</div>
+                  <div className="text-xs text-muted-foreground">Est. cost only</div>
                 </div>
                 <div>
                   <div className="text-blue-500 text-2xl font-semibold tabular-nums">
                     {formatNumber(stats!.exactness_mix.mixed)}
                   </div>
-                  <div className="text-xs text-muted-foreground">Mixed events</div>
+                  <div className="text-xs text-muted-foreground">Exact tokens (Cursor)</div>
                 </div>
                 <div>
                   <div className="text-zinc-500 text-2xl font-semibold tabular-nums">

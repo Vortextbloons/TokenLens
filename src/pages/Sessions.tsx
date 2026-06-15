@@ -7,7 +7,7 @@ import type { Session } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/primitives";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Badge, Skeleton, Input } from "@/components/ui/primitives";
-import { formatDate, formatNumber, formatUsd, exactnessColor } from "@/lib/utils";
+import { formatDate, formatNumber, formatUsd, exactnessColor, formatExactness } from "@/lib/utils";
 import { Search, ChevronRight } from "lucide-react";
 
 export function Sessions() {
@@ -84,7 +84,7 @@ export function Sessions() {
                     <TableCell className="text-right tabular-nums">{formatUsd(s.total_cost_usd)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{formatDate(s.last_seen_at)}</TableCell>
                     <TableCell>
-                      <span className={`text-xs ${exactnessColor(s.exactness)}`}>{s.exactness}</span>
+                      <span className={`text-xs ${exactnessColor(s.exactness)}`}>{formatExactness(s.exactness)}</span>
                     </TableCell>
                     <TableCell>
                       <Link to={`/sessions/${s.id}`} className="text-muted-foreground hover:text-foreground inline-flex">

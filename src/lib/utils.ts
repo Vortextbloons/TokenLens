@@ -79,3 +79,14 @@ export function exactnessColor(e: string): string {
     default: return "text-zinc-500";
   }
 }
+
+/** Human-readable label for token/cost confidence. */
+export function formatExactness(e: string): string {
+  switch (e) {
+    case "exact": return "Exact";
+    case "estimated": return "Est. cost";
+    case "mixed": return "Exact tokens";
+    case "unknown": return "Unknown";
+    default: return e;
+  }
+}

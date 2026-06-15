@@ -2,6 +2,7 @@ import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Topbar } from "@/components/layout/Topbar";
 import { Toaster } from "@/components/ui/toaster";
+import { AppUpdater } from "@/components/AppUpdater";
 import { Overview } from "@/pages/Overview";
 import { Sessions } from "@/pages/Sessions";
 import { SessionDetail } from "@/pages/SessionDetail";
@@ -46,6 +47,7 @@ export default function App() {
           </main>
         </div>
         <Toaster />
+        <AppUpdater />
       </div>
     </HashRouter>
   );

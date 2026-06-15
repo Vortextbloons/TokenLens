@@ -5,7 +5,7 @@ import type { Session, UsageEvent } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle, Skeleton, Badge, Separator } from "@/components/ui/primitives";
 import { TokensAreaChart } from "@/charts";
-import { formatDate, formatNumber, formatUsd, exactnessColor } from "@/lib/utils";
+import { formatDate, formatNumber, formatUsd, exactnessColor, formatExactness } from "@/lib/utils";
 import { ArrowLeft, Clock, Cpu, DollarSign, Hash } from "lucide-react";
 
 export function SessionDetail() {
@@ -67,7 +67,7 @@ export function SessionDetail() {
         description={`Source session ${session.source_session_id}`}
         actions={
           <Badge variant="outline" className={exactnessColor(session.exactness)}>
-            {session.exactness}
+            {formatExactness(session.exactness)}
           </Badge>
         }
       />

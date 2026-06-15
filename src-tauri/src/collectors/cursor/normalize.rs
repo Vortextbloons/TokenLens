@@ -60,7 +60,9 @@ pub fn normalize_api_event(v: &Value, source_path: Option<&str>) -> Option<Usage
                 .map(|s| s.to_string())
         });
 
-    let charged_cents = v.get("chargedCents").and_then(|x| x.as_f64());
+    let charged_cents = cents_field(v, &["chargedCents", "charged_cents"]);
+    let model_cents = token_usage.and_then(|tu| cents_field(tu, &["totalCents", "total_cents"]));
+    let tokens_from_api = token_usage.is_some();
 
     let mut raw = v.clone();
     if let Some(sid) = &session_id {
@@ -100,7 +102,7 @@ pub fn normalize_api_event(v: &Value, source_path: Option<&str>) -> Option<Usage
         ..UsageEvent::new(timestamp)
     };
 
-    apply_cursor_cost(&mut ev, &kind, charged_cents);
+    apply_cursor_cost(&mut ev, &kind, charged_cents, model_cents, tokens_from_api);
     Some(ev)
 }
 
@@ -199,7 +201,7 @@ pub fn normalize_csv_row(
         ..UsageEvent::new(timestamp)
     };
 
-    apply_cursor_cost(&mut ev, kind, charged_cents);
+    apply_cursor_cost(&mut ev, kind, charged_cents, None, true);
     Some(ev)
 }
 
@@ -288,16 +290,55 @@ fn int_field(obj: Option<&Value>, keys: &[&str]) -> i64 {
         if let Some(n) = obj.get(*k).and_then(|x| x.as_i64()) {
             return n;
         }
+        if let Some(n) = obj.get(*k).and_then(|x| x.as_f64()) {
+            return n.round() as i64;
+        }
         if let Some(s) = obj.get(*k).and_then(|x| x.as_str()) {
             if let Ok(n) = s.parse::<i64>() {
                 return n;
+            }
+            if let Ok(n) = s.parse::<f64>() {
+                return n.round() as i64;
             }
         }
     }
     0
 }
 
-pub fn apply_cursor_cost(ev: &mut UsageEvent, kind: &str, charged_cents: Option<f64>) {
+fn cents_field(obj: &Value, keys: &[&str]) -> Option<f64> {
+    for k in keys {
+        if let Some(n) = obj.get(*k).and_then(|x| x.as_f64()) {
+            if n > 0.0 {
+                return Some(n);
+            }
+        }
+        if let Some(n) = obj.get(*k).and_then(|x| x.as_i64()) {
+            if n > 0 {
+                return Some(n as f64);
+            }
+        }
+        if let Some(s) = obj.get(*k).and_then(|x| x.as_str()) {
+            if let Ok(n) = s.parse::<f64>() {
+                if n > 0.0 {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Apply cost and exactness for a Cursor usage event.
+///
+/// Priority: `chargedCents` from the API (actual bill) → `tokenUsage.totalCents`
+/// (Cursor's own model-cost calculation) → local pricing table fallback.
+pub fn apply_cursor_cost(
+    ev: &mut UsageEvent,
+    kind: &str,
+    charged_cents: Option<f64>,
+    model_cents: Option<f64>,
+    tokens_from_api: bool,
+) {
     let model = ev.model.clone().unwrap_or_default();
     let breakdown = pricing::compute_cost_breakdown(
         PROVIDER,
@@ -309,17 +350,36 @@ pub fn apply_cursor_cost(ev: &mut UsageEvent, kind: &str, charged_cents: Option<
         ev.cache_write_tokens,
     );
 
+    // Authoritative billed amount (usage-based or request-priced included events).
     if let Some(cents) = charged_cents {
-        if cents > 0.0 && !is_included_kind(kind) {
+        if cents > 0.0 {
             ev.cost_usd = cents / 100.0;
             ev.exactness = Exactness::Exact;
             return;
         }
     }
 
+    // Cursor-computed model cost inside tokenUsage (common for included, token-based calls).
+    if let Some(cents) = model_cents {
+        ev.cost_usd = cents / 100.0;
+        ev.exactness = if is_included_kind(kind) {
+            // Tokens and per-token cost both come from Cursor; dollar amount is
+            // API-equivalent (not an on-invoice charge for included usage).
+            Exactness::Mixed
+        } else {
+            Exactness::Exact
+        };
+        return;
+    }
+
     if is_included_kind(kind) {
         ev.cost_usd = breakdown.cost_usd;
-        ev.exactness = Exactness::Estimated;
+        ev.exactness = if tokens_from_api {
+            // Token counts from Cursor API; cost from our pricing table.
+            Exactness::Mixed
+        } else {
+            Exactness::Estimated
+        };
         return;
     }
 
@@ -329,6 +389,24 @@ pub fn apply_cursor_cost(ev: &mut UsageEvent, kind: &str, charged_cents: Option<
         CostStatus::Estimated => Exactness::Estimated,
         CostStatus::Unpriced => Exactness::Unknown,
     };
+}
+
+/// Re-apply Cursor cost logic from a stored raw JSON payload (for recalculate).
+pub fn apply_cursor_cost_from_raw(ev: &mut UsageEvent, raw: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    let kind = v
+        .get("kind")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let token_usage = v.get("tokenUsage");
+    let charged_cents = cents_field(&v, &["chargedCents", "charged_cents"]);
+    let model_cents = token_usage.and_then(|tu| cents_field(tu, &["totalCents", "total_cents"]));
+    let tokens_from_api = token_usage.is_some();
+    apply_cursor_cost(ev, &kind, charged_cents, model_cents, tokens_from_api);
+    true
 }
 
 fn redact_secrets_in_value(v: &mut Value) {
@@ -354,7 +432,8 @@ mod tests {
                 "inputTokens": 100,
                 "outputTokens": 50,
                 "cacheWriteTokens": 10,
-                "cacheReadTokens": 200
+                "cacheReadTokens": 200,
+                "totalCents": 42.5
             },
             "chargedCents": 0.0
         });
@@ -364,7 +443,22 @@ mod tests {
         assert_eq!(ev.input_tokens, 100);
         assert_eq!(ev.output_tokens, 50);
         assert_eq!(ev.event_type, "included");
-        assert_eq!(ev.exactness, Exactness::Estimated);
+        assert!((ev.cost_usd - 0.425).abs() < 0.0001);
+        assert_eq!(ev.exactness, Exactness::Mixed);
+    }
+
+    #[test]
+    fn included_request_based_uses_charged_cents() {
+        let v = json!({
+            "timestamp": "1716845903438",
+            "model": "claude-4-sonnet-thinking",
+            "kind": "Included in Business",
+            "isTokenBasedCall": false,
+            "chargedCents": 8
+        });
+        let ev = normalize_api_event(&v, None).unwrap();
+        assert!((ev.cost_usd - 0.08).abs() < 0.0001);
+        assert_eq!(ev.exactness, Exactness::Exact);
     }
 
     #[test]
@@ -401,7 +495,7 @@ mod tests {
         assert_eq!(ev.input_tokens, 91383);
         assert_eq!(ev.cache_read_tokens, 758532);
         assert_eq!(ev.total_tokens, 860158);
-        assert_eq!(ev.exactness, Exactness::Estimated);
+        assert_eq!(ev.exactness, Exactness::Mixed);
     }
 
     #[test]
