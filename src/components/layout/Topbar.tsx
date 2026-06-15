@@ -6,15 +6,18 @@ import { Select } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { toast } from "@/stores/toast";
 import { generateSampleData, purgeSampleData, resetAllData, isTauri, recalculateCosts, confirmDialog } from "@/lib/tauri";
+import { useDataRevision } from "@/stores/dataRevision";
 
 export function Topbar() {
   const { theme, setTheme } = useTheme();
   const { range, setRange } = useFilter();
+  const bumpData = useDataRevision((s) => s.bump);
 
   const onGenerateSamples = async () => {
     try {
       const n = await generateSampleData();
       toast({ title: `Generated ${n} sample events`, variant: "success" });
+      bumpData();
     } catch (e: any) {
       toast({ title: "Failed to generate samples", description: String(e), variant: "destructive" });
     }
@@ -27,6 +30,7 @@ export function Topbar() {
         title: n > 0 ? `Removed ${n} sample events` : "No sample data to remove",
         variant: "success",
       });
+      bumpData();
     } catch (e: any) {
       toast({ title: "Failed to remove sample data", description: String(e), variant: "destructive" });
     }
@@ -55,6 +59,7 @@ export function Topbar() {
           `${s.events} events, ${s.sessions} sessions, ${s.sources} sources, ${s.settings} settings`,
         variant: "destructive",
       });
+      bumpData();
     } catch (e: any) {
       toast({ title: "Reset failed", description: String(e), variant: "destructive" });
     }
@@ -64,6 +69,7 @@ export function Topbar() {
     try {
       const n = await recalculateCosts();
       toast({ title: `Recalculated ${n} events`, variant: "success" });
+      bumpData();
     } catch (e: any) {
       toast({ title: "Failed to recalc", description: String(e), variant: "destructive" });
     }

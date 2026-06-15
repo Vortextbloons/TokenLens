@@ -89,6 +89,8 @@ pub fn run() {
 
     info!("TokenLens starting up");
 
+    collectors::cursor::start_periodic_sync();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -146,6 +148,11 @@ pub fn run() {
             commands::generate_sample_data,
             commands::purge_sample_data,
             commands::scan_inbox,
+            commands::cursor_start_login,
+            commands::cursor_connect_with_token,
+            commands::cursor_disconnect,
+            commands::cursor_get_status,
+            commands::cursor_sync_now,
             alerts::list_alerts,
             alerts::acknowledge_alert,
             alerts::evaluate_budgets_command,

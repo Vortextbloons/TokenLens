@@ -1,5 +1,6 @@
-//! Collectors: JSONL inbox and OpenCode SQLite import.
+//! Collectors: JSONL inbox, OpenCode SQLite import, and Cursor dashboard sync.
 
+pub mod cursor;
 pub mod opencode_db;
 
 use crate::ingest;

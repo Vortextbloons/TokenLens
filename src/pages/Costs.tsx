@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useFilterObject } from "@/stores/filter";
+import { useDataRevision } from "@/stores/dataRevision";
 import { getBreakdown, getOverviewStats, getUsageTimeseries } from "@/lib/tauri";
 import type { Breakdown, OverviewStats, TimeseriesPoint } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -11,6 +12,7 @@ import { TrendingUp, AlertTriangle } from "lucide-react";
 
 export function Costs() {
   const filter = useFilterObject();
+  const dataRevision = useDataRevision((s) => s.revision);
   const [byProvider, setByProvider] = useState<Breakdown[] | null>(null);
   const [byModel, setByModel] = useState<Breakdown[] | null>(null);
   const [series, setSeries] = useState<TimeseriesPoint[]>([]);
@@ -27,7 +29,7 @@ export function Costs() {
       setByProvider(p); setByModel(m); setSeries(s); setStats(st);
     });
     // eslint-disable-next-line
-  }, [JSON.stringify(filter)]);
+  }, [JSON.stringify(filter), dataRevision]);
 
   // Simple linear forecast based on last 14 days
   const last14 = series.slice(-14);

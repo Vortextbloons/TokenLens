@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useFilterObject } from "@/stores/filter";
+import { useDataRevision } from "@/stores/dataRevision";
 import { getSessions } from "@/lib/tauri";
 import type { Session } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -11,6 +12,7 @@ import { Search, ChevronRight } from "lucide-react";
 
 export function Sessions() {
   const filter = useFilterObject();
+  const dataRevision = useDataRevision((s) => s.revision);
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [query, setQuery] = useState("");
 
@@ -18,7 +20,7 @@ export function Sessions() {
     setSessions(null);
     getSessions({ ...filter, limit: 500 }).then(setSessions).catch(() => setSessions([]));
     // eslint-disable-next-line
-  }, [JSON.stringify(filter)]);
+  }, [JSON.stringify(filter), dataRevision]);
 
   const filtered = (sessions ?? []).filter((s) => {
     if (!query) return true;

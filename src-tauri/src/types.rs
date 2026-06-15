@@ -51,6 +51,7 @@ pub enum SourceKind {
     Lmstudio,
     OaiProxy,
     Manual,
+    Cursor,
 }
 
 impl SourceKind {
@@ -62,6 +63,7 @@ impl SourceKind {
             SourceKind::Lmstudio => "lmstudio",
             SourceKind::OaiProxy => "oai_proxy",
             SourceKind::Manual => "manual",
+            SourceKind::Cursor => "cursor",
         }
     }
 }
@@ -76,9 +78,21 @@ impl std::str::FromStr for SourceKind {
             "lmstudio" => SourceKind::Lmstudio,
             "oai_proxy" => SourceKind::OaiProxy,
             "manual" => SourceKind::Manual,
+            "cursor" => SourceKind::Cursor,
             _ => return Err(()),
         })
     }
+}
+
+/// Cursor account connection status (no secrets exposed to the frontend).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CursorConnectionStatus {
+    pub connected: bool,
+    pub email_or_user_label: Option<String>,
+    pub expires_at: Option<String>,
+    pub last_sync_at: Option<String>,
+    pub last_sync_result: Option<String>,
+    pub events_total: i64,
 }
 
 /// Raw or normalized event before persistence.

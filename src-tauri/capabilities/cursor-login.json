@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "cursor-login",
+  "description": "Permissions for the Cursor OAuth sign-in webview",
+  "windows": ["cursor-login"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:event:default"
+  ]
+}

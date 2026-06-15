@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useFilterObject } from "@/stores/filter";
+import { useDataRevision } from "@/stores/dataRevision";
 import { getBreakdown, getUsageTimeseries, getOverviewStats } from "@/lib/tauri";
 import type { Breakdown, TimeseriesPoint, OverviewStats } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -10,6 +11,7 @@ import { EmptyState } from "@/components/layout/PageHeader";
 
 export function Projects() {
   const filter = useFilterObject();
+  const dataRevision = useDataRevision((s) => s.revision);
   const [data, setData] = useState<Breakdown[] | null>(null);
   const [series, setSeries] = useState<TimeseriesPoint[]>([]);
   const [stats, setStats] = useState<OverviewStats | null>(null);
@@ -22,7 +24,7 @@ export function Projects() {
       getOverviewStats(filter),
     ]).then(([b, s, st]) => { setData(b); setSeries(s); setStats(st); });
     // eslint-disable-next-line
-  }, [JSON.stringify(filter)]);
+  }, [JSON.stringify(filter), dataRevision]);
 
   return (
     <div className="animate-fade-in">

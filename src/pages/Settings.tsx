@@ -6,6 +6,7 @@ import {
   listPricing, upsertPricing, deletePricing, importPricingJson, exportPricing,
   listMissingPricing, recalculateCosts, confirmDialog, isTauri,
   cursorStartLogin, cursorDisconnect, cursorGetStatus, cursorSyncNow, cursorConnectWithToken,
+  scanInbox,
 } from "@/lib/tauri";
 import type { AppSettings, Source, ModelPricing, CursorConnectionStatus } from "@/types/contracts";
 import type { MissingPricingRow } from "@/lib/tauri";
@@ -13,7 +14,10 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, Switch, Button, Input, Label, Badge, Skeleton, Separator, Tabs, TabsList, TabsTrigger, TabsContent, Textarea } from "@/components/ui/primitives";
 import { Plus, Trash2, ScanLine, Play, Square, Database, FileDown, FileUp, Wand2, ListChecks, Save, RefreshCw, AlertTriangle, Link2, Unlink } from "lucide-react";
 import { toast } from "@/stores/toast";
+import { useFilterObject } from "@/stores/filter";
 import { formatUsd, formatNumber } from "@/lib/utils";
+import { useTheme } from "@/stores/theme";
+import { useDataRevision } from "@/stores/dataRevision";
 
 export function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -32,6 +36,11 @@ export function Settings() {
   const [cursorSyncing, setCursorSyncing] = useState(false);
   const [cursorTokenOpen, setCursorTokenOpen] = useState(false);
   const [cursorToken, setCursorToken] = useState("");
+  const [tab, setTab] = useState("sources");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const filter = useFilterObject();
+  const { setTheme } = useTheme();
+  const bumpData = useDataRevision((s) => s.bump);
 
   const reloadCursor = async () => {
     try {
@@ -43,15 +52,25 @@ export function Settings() {
   };
 
   const reload = async () => {
-    const [s, src, w, sz, pr] = await Promise.all([
-      getSettings(), getSources(), listWatchers(), dbSizeMb(), listPricing(),
-    ]);
-    setSettings(s);
-    setSources(src);
-    setWatchers(w);
-    setSize(sz);
-    setPricing(pr);
-    await reloadCursor();
+    try {
+      setLoadError(null);
+      const [s, src, w, sz, pr] = await Promise.all([
+        getSettings(), getSources(), listWatchers(), dbSizeMb(), listPricing(),
+      ]);
+      setSettings(s);
+      setSources(src);
+      setWatchers(w);
+      setSize(sz);
+      setPricing(pr);
+      if (s.theme === "light" || s.theme === "dark" || s.theme === "system") {
+        setTheme(s.theme);
+      }
+      await reloadCursor();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLoadError(msg);
+      toast({ title: "Failed to load settings", description: msg, variant: "destructive" });
+    }
   };
 
   useEffect(() => { reload().catch(() => {}); }, []);
@@ -84,7 +103,10 @@ export function Settings() {
 
   const save = async (next: AppSettings) => {
     try {
-      const updated = await updateSettings(next);
+      const updated = await updateSettings({
+        ...next,
+        theme: useTheme.getState().theme,
+      });
       setSettings(updated);
       toast({ title: "Settings saved", variant: "success" });
     } catch (e: any) {
@@ -252,6 +274,7 @@ export function Settings() {
         variant: "destructive",
       });
       reload();
+      bumpData();
     } catch (e: any) { toast({ title: "Reset failed", description: String(e), variant: "destructive" }); }
   };
 
@@ -259,10 +282,29 @@ export function Settings() {
     const path = prompt(`Enter full output path (e.g. C:\\Users\\you\\Desktop\\tokenlens-export.${kind}):`);
     if (!path) return;
     try {
-      const n = kind === "csv" ? await exportCsv({}, path) : await exportJson({}, path);
+      const n = kind === "csv" ? await exportCsv(filter, path) : await exportJson(filter, path);
       toast({ title: `Exported ${n} events`, description: path, variant: "success" });
     } catch (e: any) {
       toast({ title: "Export failed", description: String(e), variant: "destructive" });
+    }
+  };
+
+  const onScanInbox = async () => {
+    if (heavyOp) return;
+    setHeavyOp(true);
+    try {
+      const r = await scanInbox();
+      toast({
+        title: "Inbox scan complete",
+        description: `${r.events_inserted} inserted, ${r.events_skipped_duplicate} duplicates (${r.duration_ms}ms)`,
+        variant: r.events_inserted > 0 ? "success" : "default",
+      });
+      reload();
+      bumpData();
+    } catch (e: any) {
+      toast({ title: "Inbox scan failed", description: String(e), variant: "destructive" });
+    } finally {
+      setHeavyOp(false);
     }
   };
 
@@ -434,14 +476,28 @@ export function Settings() {
   };
 
   if (!settings) {
-    return <div className="space-y-4"><Skeleton className="h-12 w-1/3" /><Skeleton className="h-72" /></div>;
+    return (
+      <div className="space-y-4">
+        {loadError ? (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm">
+            <p className="font-medium text-destructive">Failed to load settings</p>
+            <p className="text-muted-foreground mt-1">{loadError}</p>
+            <Button variant="outline" size="sm" className="mt-3" onClick={() => reload().catch(() => {})}>
+              Retry
+            </Button>
+          </div>
+        ) : null}
+        <Skeleton className="h-12 w-1/3" />
+        <Skeleton className="h-72" />
+      </div>
+    );
   }
 
   return (
     <div className="animate-fade-in">
       <PageHeader title="Settings" description="Configure sources, pricing, privacy, and storage." />
 
-      <Tabs value="sources" onValueChange={() => {}}>
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="sources">Sources</TabsTrigger>
           <TabsTrigger value="pricing">Pricing</TabsTrigger>
@@ -521,6 +577,9 @@ export function Settings() {
             <CardContent className="space-y-3">
               <Button variant="outline" size="sm" onClick={onDiscover}>
                 <ScanLine className="h-3.5 w-3.5" /> Discover default OpenCode paths
+              </Button>
+              <Button variant="outline" size="sm" disabled={heavyOp} onClick={onScanInbox}>
+                <ScanLine className="h-3.5 w-3.5" /> Scan inbox folder
               </Button>
               <Separator />
               {sources.length === 0 ? (
@@ -865,7 +924,7 @@ export function Settings() {
               </div>
               <div className="text-xs text-muted-foreground">
                 Cleanup deletes raw events older than {settings.raw_retention_days} days; aggregate data is preserved.
-                Vacuum reclaims disk space. Reset deletes everything except your settings.
+                Vacuum reclaims disk space. Reset deletes all usage data, sources, and settings — model pricing is kept.
               </div>
             </CardContent>
           </Card>

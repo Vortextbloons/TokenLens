@@ -12,6 +12,7 @@ import { Costs } from "@/pages/Costs";
 import { Timeline } from "@/pages/Timeline";
 import { RawEvents } from "@/pages/RawEvents";
 import { Settings } from "@/pages/Settings";
+import { MobileNav } from "@/components/layout/MobileNav";
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
         <Sidebar />
         <div className="flex-1 flex flex-col min-w-0">
           <Topbar />
+          <MobileNav />
           <main className="flex-1 overflow-y-auto scrollbar-thin">
             <div className="p-6 max-w-[1400px] mx-auto w-full">
               <Routes>

@@ -66,6 +66,12 @@ impl From<csv::Error> for AppError {
     }
 }
 
+impl From<reqwest::Error> for AppError {
+    fn from(e: reqwest::Error) -> Self {
+        AppError::Network(e.to_string())
+    }
+}
+
 /// Frontend-friendly error payload. Avoids leaking SQL/internal details but
 /// still gives the user something useful to read.
 #[derive(Debug, Serialize)]
@@ -92,9 +98,13 @@ impl Serialize for AppError {
             AppError::Internal(_) => "internal",
             AppError::Other(_) => "other",
         };
+        let message = match self {
+            AppError::Db(_) => "database error".to_string(),
+            _ => self.to_string(),
+        };
         let payload = AppErrorPayload {
             kind: kind.to_string(),
-            message: self.to_string(),
+            message,
         };
         payload.serialize(serializer)
     }

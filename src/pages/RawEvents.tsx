@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useFilterObject } from "@/stores/filter";
+import { useDataRevision } from "@/stores/dataRevision";
 import { listEvents, listPricing } from "@/lib/tauri";
 import type { UsageEvent, ModelPricing } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -10,6 +11,7 @@ import { EmptyState } from "@/components/layout/PageHeader";
 
 export function RawEvents() {
   const filter = useFilterObject();
+  const dataRevision = useDataRevision((s) => s.revision);
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -24,7 +26,7 @@ export function RawEvents() {
       .then(setEvents)
       .finally(() => setLoading(false));
     // eslint-disable-next-line
-  }, [JSON.stringify(filter), exactness]);
+  }, [JSON.stringify(filter), exactness, dataRevision]);
 
   useEffect(() => { listPricing().then(setPricing).catch(() => {}); }, []);
 

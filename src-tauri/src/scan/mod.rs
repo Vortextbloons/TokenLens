@@ -3,7 +3,7 @@
 
 use crate::errors::{AppError, AppResult};
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use tokio::sync::Mutex;
 
 static HEAVY_OP_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -25,16 +25,29 @@ where
     F: FnOnce() -> AppResult<R> + Send + 'static,
     R: Send + 'static,
 {
-    run_blocking(move || {
-        let _guard = HEAVY_OP_LOCK.try_lock().ok_or_else(|| {
-            AppError::Invalid(
-                "Another scan or heavy operation is already in progress. Please wait for it to finish."
-                    .into(),
-            )
-        })?;
-        f()
-    })
-    .await
+    let _guard = HEAVY_OP_LOCK.try_lock().map_err(|_| {
+        AppError::Invalid(
+            "Another scan or heavy operation is already in progress. Please wait for it to finish."
+                .into(),
+        )
+    })?;
+    run_blocking(f).await
+}
+
+/// Run async exclusive work (e.g. Cursor sync with HTTP) off the UI thread.
+pub async fn run_exclusive_blocking_async<F, Fut, R>(f: F) -> AppResult<R>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = AppResult<R>> + Send + 'static,
+    R: Send + 'static,
+{
+    let _guard = HEAVY_OP_LOCK.try_lock().map_err(|_| {
+        AppError::Invalid(
+            "Another scan or heavy operation is already in progress. Please wait for it to finish."
+                .into(),
+        )
+    })?;
+    f().await
 }
 
 /// How many events to persist per SQLite transaction during large imports.

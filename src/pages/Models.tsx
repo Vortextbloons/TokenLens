@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useFilterObject } from "@/stores/filter";
+import { useDataRevision } from "@/stores/dataRevision";
 import { getBreakdown } from "@/lib/tauri";
 import type { Breakdown } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -10,13 +11,14 @@ import { EmptyState } from "@/components/layout/PageHeader";
 
 export function Models() {
   const filter = useFilterObject();
+  const dataRevision = useDataRevision((s) => s.revision);
   const [data, setData] = useState<Breakdown[] | null>(null);
 
   useEffect(() => {
     setData(null);
     getBreakdown(filter, "model").then(setData).catch(() => setData([]));
     // eslint-disable-next-line
-  }, [JSON.stringify(filter)]);
+  }, [JSON.stringify(filter), dataRevision]);
 
   return (
     <div className="animate-fade-in">

@@ -1,6 +1,7 @@
 //! File system watcher. Watches a configured folder for changes and re-scans
 //! modified files, picking up new lines from their byte offset (incremental).
 
+use crate::db;
 use crate::ingest;
 use crate::types::SourceKind;
 use notify::RecursiveMode;
@@ -68,9 +69,20 @@ pub async fn start(source_id: i64, path: PathBuf) -> crate::errors::AppResult<()
 
     // Background task: process change batches
     let mut rx = tx.1;
-    let kind = SourceKind::OpencodeLogs;
     tokio::spawn(async move {
         while let Some(paths) = rx.recv().await {
+            let kind = match db::with_conn(|conn| {
+                let k: String = conn.query_row(
+                    "SELECT kind FROM sources WHERE id = ?1",
+                    rusqlite::params![source_id],
+                    |r| r.get(0),
+                )?;
+                Ok(k)
+            }) {
+                Ok(k) => k.parse().unwrap_or(SourceKind::OpencodeLogs),
+                Err(_) => SourceKind::OpencodeLogs,
+            };
+
             for p in paths {
                 if let Err(e) = ingest::parse_and_persist_file(&p, source_id, kind).await {
                     error!("Failed to process {}: {}", p.display(), e);

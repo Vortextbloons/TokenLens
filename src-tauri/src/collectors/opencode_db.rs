@@ -7,7 +7,9 @@
 use crate::errors::{AppError, AppResult};
 use crate::ingest::{dedup, persist_events};
 use crate::pricing;
+use crate::redaction;
 use crate::scan::PERSIST_BATCH_SIZE;
+use crate::settings;
 use crate::types::{Exactness, ScanResult, UsageEvent};
 use chrono::{TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
@@ -105,11 +107,27 @@ fn flush_db_batch(
     if batch.is_empty() {
         return Ok(());
     }
+    apply_privacy_settings(batch)?;
     let n = batch.len() as i64;
     let inserted = persist_events(batch, source_id)?;
     result.events_inserted += inserted;
     result.events_skipped_duplicate += n - inserted;
     batch.clear();
+    Ok(())
+}
+
+fn apply_privacy_settings(batch: &mut [UsageEvent]) -> AppResult<()> {
+    let s = settings::load_all()?;
+    for ev in batch.iter_mut() {
+        if s.redact_secrets {
+            if let Some(raw) = &ev.raw_json {
+                ev.raw_json = Some(redaction::redact(raw));
+            }
+        }
+        if !s.store_raw_json {
+            ev.raw_json = None;
+        }
+    }
     Ok(())
 }
 

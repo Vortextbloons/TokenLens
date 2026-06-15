@@ -24,8 +24,18 @@ pub fn get_settings() -> AppResult<AppSettings> {
 }
 
 #[tauri::command]
-pub fn update_settings(s: AppSettings) -> AppResult<AppSettings> {
+pub fn update_settings(app: tauri::AppHandle, s: AppSettings) -> AppResult<AppSettings> {
     settings::save_all(&s)?;
+    use tauri_plugin_autostart::ManagerExt;
+    if s.autostart {
+        app.autolaunch()
+            .enable()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+    } else {
+        app.autolaunch()
+            .disable()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
     Ok(s)
 }
 
@@ -85,9 +95,10 @@ pub fn add_source(name: String, kind: String, path: String) -> AppResult<Source>
 
 #[tauri::command]
 pub async fn remove_source(id: i64) -> AppResult<()> {
-    // Best effort: also stop any watcher
     watcher::stop(id).await;
     db::with_conn_mut(|conn| {
+        delete_events_for_sources(conn, &[id])?;
+        delete_sessions_for_sources(conn, &[id]);
         conn.execute("DELETE FROM file_offsets WHERE source_id = ?1", params![id])?;
         conn.execute("DELETE FROM sources WHERE id = ?1", params![id])?;
         Ok(())
@@ -343,6 +354,8 @@ pub fn reset_all_data() -> AppResult<ResetSummary> {
         let _ = tauri::async_runtime::block_on(crate::watcher::stop(id));
     }
 
+    let _ = crate::collectors::cursor::disconnect();
+
     db::with_conn_mut(|conn| {
         let mut summary = ResetSummary::default();
 
@@ -366,6 +379,8 @@ pub fn reset_all_data() -> AppResult<ResetSummary> {
             conn.execute("DELETE FROM sources", [])? as i64;
         summary.settings =
             conn.execute("DELETE FROM settings", [])? as i64;
+        summary.cursor_credentials =
+            conn.execute("DELETE FROM cursor_credentials", [])? as i64;
         // Note: model_pricing is intentionally preserved — it's your reference
         // data, not user content.
 
@@ -385,6 +400,7 @@ pub struct ResetSummary {
     pub pricing_history: i64,
     pub sources: i64,
     pub settings: i64,
+    pub cursor_credentials: i64,
 }
 
 #[tauri::command]
@@ -399,7 +415,7 @@ pub fn export_csv(filter: QueryFilter, out_path: String) -> AppResult<i64> {
     let events = aggregation::list_events(&filter)?;
     let mut wtr = csv::Writer::from_path(&out_path)?;
     wtr.write_record([
-        "id",
+        "event_hash",
         "timestamp",
         "provider",
         "model",
@@ -446,8 +462,11 @@ pub fn export_json(filter: QueryFilter, out_path: String) -> AppResult<i64> {
 
 #[tauri::command]
 pub fn backup_db(out_path: String) -> AppResult<()> {
-    // Copy the live DB file safely. SQLite is in WAL mode, so also copy the
-    // -wal and -shm sidecar files to ensure a consistent snapshot.
+    db::with_conn(|conn| {
+        conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+        Ok(())
+    })?;
+
     let src = crate::db_path();
     std::fs::copy(&src, &out_path)?;
     let wal_src = {
@@ -679,4 +698,34 @@ fn delete_file_offsets_for_sources(
     let params: Vec<&dyn rusqlite::ToSql> =
         source_ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
     let _ = conn.execute(&sql, params.as_slice());
+}
+
+// ----------------- Cursor -----------------
+
+#[tauri::command]
+pub async fn cursor_start_login(app: tauri::AppHandle) -> AppResult<()> {
+    crate::collectors::cursor::login::start_login(app).await
+}
+
+#[tauri::command]
+pub async fn cursor_connect_with_token(
+    app: tauri::AppHandle,
+    token: String,
+) -> AppResult<()> {
+    crate::collectors::cursor::login::connect_manual(app, token).await
+}
+
+#[tauri::command]
+pub fn cursor_disconnect() -> AppResult<()> {
+    crate::collectors::cursor::disconnect()
+}
+
+#[tauri::command]
+pub fn cursor_get_status() -> AppResult<crate::types::CursorConnectionStatus> {
+    crate::collectors::cursor::status()
+}
+
+#[tauri::command]
+pub async fn cursor_sync_now() -> AppResult<ScanResult> {
+    crate::collectors::cursor::sync_now(true).await
 }

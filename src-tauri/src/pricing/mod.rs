@@ -74,6 +74,32 @@ pub fn get(provider: &str, model: &str) -> Option<ModelPricing> {
         .cloned()
 }
 
+fn cursor_model_alias(model: &str) -> Option<(&'static str, &'static str)> {
+    let m = model.to_lowercase();
+    if m.starts_with("claude-opus-4-7") || m.starts_with("claude-opus-4.7") {
+        return Some(("anthropic", "claude-opus-4.7"));
+    }
+    if m.starts_with("claude-opus-4-8") || m.starts_with("claude-opus-4.8") {
+        return Some(("anthropic", "claude-opus-4.8"));
+    }
+    if m.starts_with("claude-sonnet") {
+        return Some(("anthropic", "claude-sonnet-4.6"));
+    }
+    if m.starts_with("claude-haiku") {
+        return Some(("anthropic", "claude-haiku-4.5"));
+    }
+    if m.starts_with("gpt-") || m.contains("codex") {
+        return Some(("openai", "gpt-5.3-codex"));
+    }
+    if m.starts_with("gemini-") {
+        return Some(("google", "gemini-2.5-pro"));
+    }
+    if m == "auto" {
+        return Some(("cursor", "auto"));
+    }
+    None
+}
+
 /// Resolve pricing for a provider/model, with fallbacks for local runners.
 pub fn resolve(provider: &str, model: &str) -> Option<ModelPricing> {
     if let Some(p) = get(provider, model) {
@@ -81,6 +107,13 @@ pub fn resolve(provider: &str, model: &str) -> Option<ModelPricing> {
     }
     if let Some(p) = get(provider, "any") {
         return Some(p);
+    }
+    if provider == "cursor" {
+        if let Some((p, m)) = cursor_model_alias(model) {
+            if let Some(pr) = get(p, m) {
+                return Some(pr);
+            }
+        }
     }
     if matches!(provider, "local" | "lmstudio") {
         return get("local", "any");

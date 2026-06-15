@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useFilterObject } from "@/stores/filter";
+import { useDataRevision } from "@/stores/dataRevision";
 import { getOverviewStats, getUsageTimeseries, getBreakdown, listAlerts, evaluateBudgets } from "@/lib/tauri";
 import type { OverviewStats, TimeseriesPoint, Breakdown } from "@/types/contracts";
 import { PageHeader, EmptyState } from "@/components/layout/PageHeader";
@@ -24,6 +25,7 @@ interface AlertRow {
 
 export function Overview() {
   const filter = useFilterObject();
+  const dataRevision = useDataRevision((s) => s.revision);
   const [stats, setStats] = useState<OverviewStats | null>(null);
   const [series, setSeries] = useState<TimeseriesPoint[]>([]);
   const [models, setModels] = useState<Breakdown[]>([]);
@@ -55,7 +57,7 @@ export function Overview() {
     }
   };
 
-  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [JSON.stringify(filter)]);
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [JSON.stringify(filter), dataRevision]);
 
   const onSeed = async () => {
     try {

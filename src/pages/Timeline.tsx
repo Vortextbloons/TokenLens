@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useFilterObject } from "@/stores/filter";
+import { useDataRevision } from "@/stores/dataRevision";
 import { getUsageTimeseries, listEvents } from "@/lib/tauri";
 import type { TimeseriesPoint, UsageEvent } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -10,6 +11,7 @@ import { EmptyState } from "@/components/layout/PageHeader";
 
 export function Timeline() {
   const filter = useFilterObject();
+  const dataRevision = useDataRevision((s) => s.revision);
   const [series, setSeries] = useState<TimeseriesPoint[]>([]);
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -21,7 +23,7 @@ export function Timeline() {
       listEvents({ ...filter, limit: 1000 }),
     ]).then(([s, e]) => { setSeries(s); setEvents(e); }).finally(() => setLoading(false));
     // eslint-disable-next-line
-  }, [JSON.stringify(filter)]);
+  }, [JSON.stringify(filter), dataRevision]);
 
   // Heatmap: 7 (dow) x 24 (hour)
   const heatmap = useMemo(() => {

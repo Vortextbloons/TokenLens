@@ -14,6 +14,35 @@ use tracing::{info, warn};
 
 static DB: OnceCell<Arc<Mutex<Connection>>> = OnceCell::new();
 
+const MIGRATION_001: &str = include_str!("../../migrations/001_init.sql");
+const MIGRATION_002: &str = include_str!("../../migrations/002_cursor_credentials.sql");
+
+struct EmbeddedMigration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+}
+
+const EMBEDDED_MIGRATIONS: &[EmbeddedMigration] = &[
+    EmbeddedMigration {
+        version: 1,
+        name: "001_init.sql",
+        sql: MIGRATION_001,
+    },
+    EmbeddedMigration {
+        version: 2,
+        name: "002_cursor_credentials.sql",
+        sql: MIGRATION_002,
+    },
+];
+
+fn embedded_sql(version: i64) -> Option<&'static str> {
+    EMBEDDED_MIGRATIONS
+        .iter()
+        .find(|m| m.version == version)
+        .map(|m| m.sql)
+}
+
 /// Initialize the DB. Must be called once at app startup.
 pub fn init(db_path: &Path) -> AppResult<()> {
     if let Some(parent) = db_path.parent() {
@@ -70,9 +99,10 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
     let migrations_dir = migrations_path();
     if !migrations_dir.exists() {
         warn!(
-            "migrations dir not found at {}, skipping",
+            "migrations dir not found at {}, using embedded SQL",
             migrations_dir.display()
         );
+        apply_embedded_migrations(conn, current)?;
         return Ok(());
     }
     let mut entries: Vec<_> = std::fs::read_dir(&migrations_dir)?
@@ -99,11 +129,32 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
         if version <= current {
             continue;
         }
-        let sql = std::fs::read_to_string(entry.path())?;
-        // Migrations may include PRAGMAs or other statements that cannot run
-        // inside an explicit transaction.
+        let sql = match std::fs::read_to_string(entry.path()) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    "failed to read migration {}: {e}, using embedded fallback",
+                    name_str
+                );
+                embedded_sql(version).ok_or_else(|| {
+                    AppError::Internal(format!("no embedded migration for version {version}"))
+                })?
+                .to_string()
+            }
+        };
         conn.execute_batch(&sql)?;
         info!("Applied migration {}", name_str);
+    }
+    Ok(())
+}
+
+fn apply_embedded_migrations(conn: &Connection, current: i64) -> AppResult<()> {
+    for m in EMBEDDED_MIGRATIONS {
+        if m.version <= current {
+            continue;
+        }
+        conn.execute_batch(m.sql)?;
+        info!("Applied embedded migration {}", m.name);
     }
     Ok(())
 }

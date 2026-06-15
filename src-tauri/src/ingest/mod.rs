@@ -325,8 +325,26 @@ pub fn scan_path(path: &Path, source_id: i64) -> AppResult<ScanResult> {
 fn is_supported_extension(p: &Path) -> bool {
     matches!(
         p.extension().and_then(|s| s.to_str()).map(|s| s.to_lowercase()).as_deref(),
-        Some("jsonl") | Some("json") | Some("log") | Some("ndjson") | Some("txt")
+        Some("jsonl") | Some("json") | Some("log") | Some("ndjson") | Some("txt") | Some("csv")
     )
+}
+
+fn scan_cursor_csv(path: &Path, _source_id: i64) -> AppResult<ScanResult> {
+    let start = Instant::now();
+    let mut result = ScanResult::default();
+    result.files_scanned = 1;
+    match crate::collectors::cursor::import_csv_file(path) {
+        Ok(n) => {
+            result.events_inserted = n as i64;
+            result.duration_ms = start.elapsed().as_millis() as i64;
+            Ok(result)
+        }
+        Err(e) => {
+            result.errors.push(format!("{}: {}", path.display(), e));
+            result.duration_ms = start.elapsed().as_millis() as i64;
+            Ok(result)
+        }
+    }
 }
 
 /// Persist a batch of events. Returns the number actually inserted (dedup happens at DB level).
@@ -450,6 +468,11 @@ pub fn scan_source_kind(kind: SourceKind, path: &Path) -> AppResult<ScanResult> 
     let source_id = db::upsert_source(&name, kind, Some(path.to_str().unwrap_or("")))?;
     let res = if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("db") {
         crate::collectors::opencode_db::scan_db(path, source_id)
+    } else if kind == SourceKind::Cursor
+        && path.is_file()
+        && path.extension().and_then(|s| s.to_str()) == Some("csv")
+    {
+        scan_cursor_csv(path, source_id)
     } else {
         scan_path(path, source_id)
     };

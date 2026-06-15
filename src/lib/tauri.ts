@@ -48,6 +48,7 @@ export const stopWatcher = (id: number) => invoke<void>("stop_watcher", { id });
 export const listWatchers = () => invoke<[number, string][]>("list_watchers");
 export const discoverDefaultSources = () =>
   invoke<Source[]>("discover_default_sources");
+export const scanInbox = () => invoke<ScanResult>("scan_inbox");
 
 // ----------------- Cursor -----------------
 

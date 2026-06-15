@@ -170,6 +170,18 @@ export interface AppSettings {
   watcher_enabled: boolean;
   debug_logging: boolean;
   collector_endpoint_enabled: boolean;
+  budget_daily_tokens?: number;
+  budget_monthly_cost_usd?: number;
+}
+
+export interface AlertRow {
+  id: number;
+  alert_type: string;
+  severity: string;
+  title: string;
+  message: string;
+  created_at: string;
+  acknowledged_at: string | null;
 }
 
 export interface AppError {
