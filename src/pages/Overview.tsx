@@ -215,19 +215,26 @@ export function Overview() {
         />
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <TokensCard
-              value={stats!.period_tokens}
-              hint={range === "all" ? "all time" : `${rangeLabel} · ${prevRangeLabel}`}
-              delta={range === "all" ? null : periodTokensDelta}
-            />
-            <CostCard
-              value={stats!.period_cost_usd}
-              hint={range === "all" ? "USD all time" : `USD ${rangeLabel} · ${prevRangeLabel}`}
-              delta={range === "all" ? null : periodCostDelta}
-            />
-            <TokensCard value={stats!.tokens_lifetime} hint="all time" />
-            <CostCard value={stats!.cost_lifetime_usd} hint="USD all time" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
+            {range === "all" ? (
+              <>
+                <TokensCard value={stats!.tokens_lifetime} hint="all time" />
+                <CostCard value={stats!.cost_lifetime_usd} hint="USD all time" />
+              </>
+            ) : (
+              <>
+                <TokensCard
+                  value={stats!.period_tokens}
+                  hint={`${rangeLabel} · ${prevRangeLabel}`}
+                  delta={periodTokensDelta}
+                />
+                <CostCard
+                  value={stats!.period_cost_usd}
+                  hint={`USD ${rangeLabel} · ${prevRangeLabel}`}
+                  delta={periodCostDelta}
+                />
+              </>
+            )}
             <TokensCard value={stats!.tokens_today} hint="tokens today" />
             <TokensCard value={stats!.tokens_week} hint="last 7 days" />
             <CostCard value={stats!.cost_today_usd} hint="USD today" />

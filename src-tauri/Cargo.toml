@@ -1,6 +1,6 @@
 [package]
 name = "tokenlens"
-version = "0.3.0"
+version = "0.3.1"
 description = "TokenLens — local-first AI token and cost analytics."
 authors = ["TokenLens Contributors"]
 edition = "2021"
@@ -13,6 +13,16 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 
+[features]
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
+# The Cursor dashboard collector needs reqwest + cookies. Default-on so the
+# existing dev flow still works, but a no-network release build can be made
+# with `--no-default-features`.
+default = ["cursor"]
+# The Cursor dashboard collector needs reqwest + cookies.
+cursor = ["dep:reqwest", "dep:base64"]
+
 [dependencies]
 tauri = { version = "2.0", features = ["tray-icon"] }
 tauri-plugin-fs = "2.0"
@@ -24,8 +34,8 @@ tauri-plugin-autostart = "2.0"
 tauri-plugin-updater = "2.0"
 tauri-plugin-process = "2.0"
 
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime — trimmed from "full" to the features we actually use.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
 
 # Storage
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -35,7 +45,6 @@ once_cell = "1.20"
 # Serde
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_with = "3"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
@@ -58,7 +67,6 @@ thiserror = "1"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tracing-appender = "0.2"
 
 # System paths
 dirs = "5"
@@ -66,9 +74,10 @@ dirs = "5"
 # CSV
 csv = "1.3"
 
-# Cursor sync (dashboard API)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
-base64 = "0.22"
+# Cursor sync (dashboard API) — gated behind the `cursor` feature so the
+# baseline binary doesn't link rustls + cookie_store.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"], optional = true }
+base64 = { version = "0.22", optional = true }
 
 # HTTP (for optional local collector endpoint in Phase 5)
 # axum is pulled in lazily; keep optional for now
@@ -81,6 +90,12 @@ rayon = "1.10"
 # Token estimation (BPE for OpenAI-style models)
 tiktoken-rs = "0.7"
 
-[features]
-# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
-custom-protocol = ["tauri/custom-protocol"]
+# Compression for raw_json BLOB column
+zstd = "0.13"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+opt-level = 3
+panic = "abort"

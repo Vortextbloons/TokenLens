@@ -357,13 +357,33 @@ pub fn list_missing_pricing() -> AppResult<Vec<pricing::MissingPricingRow>> {
 
 #[tauri::command]
 pub fn cleanup_raw_events(days: i64) -> AppResult<i64> {
-    db::with_conn_mut(|conn| {
+    let (deleted, freed_pages) = db::with_conn_mut(|conn| {
         let n = conn.execute(
             "DELETE FROM usage_events WHERE date(timestamp) < date('now', ?1)",
             params![format!("-{days} days")],
-        )?;
-        Ok(n as i64)
-    })
+        )? as i64;
+        // Read the page count before and after to decide if VACUUM is
+        // worth running. If we deleted less than 100 pages (~800 KB) it's
+        // not worth the IO.
+        let freed: i64 = conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .unwrap_or(0);
+        Ok((n, freed))
+    })?;
+
+    // Auto-VACUUM if `auto_cleanup` is on AND the delete freed meaningful
+    // space. Reclaims disk back to the OS instead of leaving the pages in
+    // the freelist for future inserts.
+    if freed_pages >= 100 {
+        let s = settings::load_all().unwrap_or_default();
+        if s.auto_cleanup {
+            let _ = db::with_conn(|conn| {
+                let _ = conn.execute_batch("VACUUM;");
+                Ok::<(), crate::errors::AppError>(())
+            });
+        }
+    }
+    Ok(deleted)
 }
 
 #[tauri::command]
@@ -390,6 +410,7 @@ pub fn reset_all_data() -> AppResult<ResetSummary> {
         let _ = tauri::async_runtime::block_on(crate::watcher::stop(id));
     }
 
+    #[cfg(feature = "cursor")]
     let _ = crate::collectors::cursor::disconnect();
 
     db::with_conn_mut(|conn| {
@@ -738,11 +759,13 @@ fn delete_file_offsets_for_sources(
 
 // ----------------- Cursor -----------------
 
+#[cfg(feature = "cursor")]
 #[tauri::command]
 pub async fn cursor_start_login(app: tauri::AppHandle) -> AppResult<()> {
     crate::collectors::cursor::login::start_login(app).await
 }
 
+#[cfg(feature = "cursor")]
 #[tauri::command]
 pub async fn cursor_connect_with_token(
     app: tauri::AppHandle,
@@ -751,16 +774,19 @@ pub async fn cursor_connect_with_token(
     crate::collectors::cursor::login::connect_manual(app, token).await
 }
 
+#[cfg(feature = "cursor")]
 #[tauri::command]
 pub fn cursor_disconnect() -> AppResult<()> {
     crate::collectors::cursor::disconnect()
 }
 
+#[cfg(feature = "cursor")]
 #[tauri::command]
 pub fn cursor_get_status() -> AppResult<crate::types::CursorConnectionStatus> {
     crate::collectors::cursor::status()
 }
 
+#[cfg(feature = "cursor")]
 #[tauri::command]
 pub async fn cursor_sync_now() -> AppResult<ScanResult> {
     crate::collectors::cursor::sync_now(true).await

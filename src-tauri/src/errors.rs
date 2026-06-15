@@ -66,6 +66,7 @@ impl From<csv::Error> for AppError {
     }
 }
 
+#[cfg(feature = "cursor")]
 impl From<reqwest::Error> for AppError {
     fn from(e: reqwest::Error) -> Self {
         AppError::Network(e.to_string())

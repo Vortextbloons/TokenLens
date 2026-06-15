@@ -72,6 +72,56 @@ fn build_where_clauses(
     (where_sql, args)
 }
 
+/// Build a `WHERE` clause for the `daily_usage` table. The `daily_usage`
+/// table is pre-aggregated by (date, provider, model, project_id) and has
+/// no `ignored` / `source_id` / `exactness` columns, so those filters are
+/// dropped on this path. Returns `None` if the user has set one of those
+/// unsupported filters, signalling that the caller should fall back to the
+/// `usage_events` scan.
+fn build_where_daily(
+    f: &QueryFilter,
+    include_dates: bool,
+) -> Option<(String, Vec<rusqlite::types::Value>)> {
+    if f.source_id.is_some() || f.exactness.is_some() {
+        return None;
+    }
+    use rusqlite::types::Value as V;
+    let mut clauses: Vec<String> = Vec::new();
+    let mut args: Vec<V> = Vec::new();
+    if include_dates {
+        if let Some(d) = &f.start_date {
+            clauses.push("date >= date(?1)".to_string());
+            args.push(V::Text(d.clone()));
+        }
+        if let Some(d) = &f.end_date {
+            let ph = args.len() + 1;
+            clauses.push(format!("date <= date(?{ph})"));
+            args.push(V::Text(d.clone()));
+        }
+    }
+    if let Some(p) = f.project_id {
+        let ph = args.len() + 1;
+        clauses.push(format!("project_id = ?{ph}"));
+        args.push(V::Integer(p));
+    }
+    if let Some(p) = &f.provider {
+        let ph = args.len() + 1;
+        clauses.push(format!("provider = ?{ph}"));
+        args.push(V::Text(p.clone()));
+    }
+    if let Some(m) = &f.model {
+        let ph = args.len() + 1;
+        clauses.push(format!("model = ?{ph}"));
+        args.push(V::Text(m.clone()));
+    }
+    let where_sql = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    };
+    Some((where_sql, args))
+}
+
 /// Full filter including the user's selected date range (charts, breakdowns).
 fn build_where(f: &QueryFilter) -> (String, Vec<rusqlite::types::Value>) {
     build_where_clauses(f, true, "")
@@ -91,94 +141,176 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
     let (where_sql, args) = build_where(filter);
     let (rolling_where_sql, rolling_args) = build_dimension_where(filter);
     db::with_conn(|conn| {
-        // Fixed rolling windows — intentionally ignore the topbar date range.
-        let q = format!(
-            "SELECT
-                COALESCE(SUM(total_tokens), 0) AS tokens_lifetime,
-                COALESCE(SUM(cost_usd), 0) AS cost_lifetime,
-                COALESCE(SUM(CASE WHEN date(timestamp)=date('now') THEN total_tokens ELSE 0 END), 0) AS tokens_today,
-                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-6 days') THEN total_tokens ELSE 0 END), 0) AS tokens_week,
-                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-29 days') THEN total_tokens ELSE 0 END), 0) AS tokens_month,
-                COALESCE(SUM(CASE WHEN date(timestamp)=date('now') THEN cost_usd ELSE 0 END), 0) AS cost_today,
-                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-6 days') THEN cost_usd ELSE 0 END), 0) AS cost_week,
-                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-29 days') THEN cost_usd ELSE 0 END), 0) AS cost_month
-             FROM usage_events {rolling_where_sql}",
-        );
-        let mut stmt = conn.prepare(&q)?;
-        let row = stmt.query_row(rusqlite::params_from_iter(rolling_args.iter()), |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, f64>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, f64>(5)?,
-                r.get::<_, f64>(6)?,
-                r.get::<_, f64>(7)?,
-            ))
-        })?;
-        let (
-            tokens_lifetime,
-            cost_lifetime,
-            tokens_today,
-            tokens_week,
-            tokens_month,
-            cost_today,
-            cost_week,
-            cost_month,
-        ) = row;
-        drop(stmt);
+        // Rolling windows (today/week/month/lifetime) are pre-aggregated in
+        // `daily_usage`, so we can avoid the per-event scan even when the
+        // DB has millions of rows. We fall back to the events scan if the
+        // user has set filters that `daily_usage` doesn't carry
+        // (source_id, exactness).
+        let daily_rolls = build_where_daily(filter, false);
+        let (rolling_tokens_today, rolling_tokens_week, rolling_tokens_month,
+             rolling_cost_today, rolling_cost_week, rolling_cost_month,
+             tokens_lifetime, cost_lifetime) = if let Some((d_where, d_args)) = daily_rolls {
+            let q = format!(
+                "SELECT
+                    COALESCE(SUM(CASE WHEN date=date('now') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date>=date('now','-6 days') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date>=date('now','-29 days') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date=date('now') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date>=date('now','-6 days') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date>=date('now','-29 days') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(cost_usd), 0)
+                 FROM daily_usage {d_where}",
+            );
+            let mut stmt = conn.prepare(&q)?;
+            let row = stmt.query_row(rusqlite::params_from_iter(d_args.iter()), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, f64>(3)?,
+                    r.get::<_, f64>(4)?,
+                    r.get::<_, f64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, f64>(7)?,
+                ))
+            })?;
+            drop(stmt);
+            row
+        } else {
+            // Fallback: scan usage_events with the same CASE expressions.
+            let q = format!(
+                "SELECT
+                    COALESCE(SUM(CASE WHEN date(timestamp)=date('now') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-6 days') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-29 days') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)=date('now') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-6 days') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-29 days') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(cost_usd), 0)
+                 FROM usage_events {rolling_where_sql}",
+            );
+            let mut stmt = conn.prepare(&q)?;
+            let row = stmt.query_row(rusqlite::params_from_iter(rolling_args.iter()), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, f64>(3)?,
+                    r.get::<_, f64>(4)?,
+                    r.get::<_, f64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, f64>(7)?,
+                ))
+            })?;
+            drop(stmt);
+            row
+        };
+        let tokens_today = rolling_tokens_today;
+        let tokens_week = rolling_tokens_week;
+        let tokens_month = rolling_tokens_month;
+        let cost_today = rolling_cost_today;
+        let cost_week = rolling_cost_week;
+        let cost_month = rolling_cost_month;
 
-        // Period-scoped aggregates for the selected date range.
-        let q_period = format!(
-            "SELECT
-                COALESCE(SUM(total_tokens), 0) AS period_tokens,
-                COALESCE(SUM(cost_usd), 0) AS period_cost,
-                COALESCE(SUM(input_tokens), 0) AS in_t,
-                COALESCE(SUM(output_tokens), 0) AS out_t,
-                COALESCE(SUM(reasoning_tokens), 0) AS reas_t,
-                COALESCE(SUM(cache_read_tokens), 0) AS cache_t
-             FROM usage_events {where_sql}",
-        );
-        let mut stmt = conn.prepare(&q_period)?;
-        let (period_tokens, period_cost, in_t, out_t, reas_t, _cache_t) = stmt.query_row(
-            rusqlite::params_from_iter(args.iter()),
-            |r| {
+        // Period-scoped aggregates for the selected date range. Routed to
+        // `daily_usage` when both endpoints are set and the user's
+        // filters are daily-compatible, since the table is already
+        // indexed by date.
+        let daily_period = if filter.start_date.is_some() && filter.end_date.is_some() {
+            build_where_daily(filter, true)
+        } else {
+            None
+        };
+        let (period_tokens, period_cost, in_t, out_t, reas_t) = if let Some((d_where, d_args)) = daily_period {
+            let q = format!(
+                "SELECT
+                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(cost_usd), 0),
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(reasoning_tokens), 0)
+                 FROM daily_usage {d_where}",
+            );
+            let mut stmt = conn.prepare(&q)?;
+            let row = stmt.query_row(rusqlite::params_from_iter(d_args.iter()), |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, f64>(1)?,
                     r.get::<_, i64>(2)?,
                     r.get::<_, i64>(3)?,
                     r.get::<_, i64>(4)?,
-                    r.get::<_, i64>(5)?,
                 ))
-            },
-        )?;
-        drop(stmt);
+            })?;
+            drop(stmt);
+            row
+        } else {
+            let q_period = format!(
+                "SELECT
+                    COALESCE(SUM(total_tokens), 0) AS period_tokens,
+                    COALESCE(SUM(cost_usd), 0) AS period_cost,
+                    COALESCE(SUM(input_tokens), 0) AS in_t,
+                    COALESCE(SUM(output_tokens), 0) AS out_t,
+                    COALESCE(SUM(reasoning_tokens), 0) AS reas_t,
+                    COALESCE(SUM(cache_read_tokens), 0) AS cache_t
+                 FROM usage_events {where_sql}",
+            );
+            let mut stmt = conn.prepare(&q_period)?;
+            let row = stmt.query_row(rusqlite::params_from_iter(args.iter()), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            })?;
+            drop(stmt);
+            row
+        };
 
         // Previous-period aggregate (period-over-period delta).
         // The "previous" window has the same length as the selected range and
         // ends the day before start_date. If start_date is null (i.e. "all
         // time") or the dates can't be parsed, the prior window is empty and
-        // both values stay 0.
+        // both values stay 0. Routed through `daily_usage` for the same
+        // reason as the period query: at most ~date-range rows scanned
+        // instead of every event.
         let (prev_period_tokens, prev_period_cost_usd) = match (
             filter.start_date.as_deref(),
             filter.end_date.as_deref(),
         ) {
             (Some(start), Some(end)) => {
-                let prev_q = format!(
-                    "SELECT
-                        COALESCE(SUM(total_tokens), 0),
-                        COALESCE(SUM(cost_usd), 0)
-                     FROM usage_events
-                     WHERE date(timestamp) >= date(?1, '-' || (julianday(?2) - julianday(?1)) || ' days')
-                       AND date(timestamp) <= date(?1, '-1 day')"
-                );
-                conn.query_row(
-                    &prev_q,
-                    rusqlite::params![start, end],
-                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)),
-                )?
+                if let Some((d_where, _)) = build_where_daily(filter, false) {
+                    let prev_q = format!(
+                        "SELECT
+                            COALESCE(SUM(total_tokens), 0),
+                            COALESCE(SUM(cost_usd), 0)
+                         FROM daily_usage
+                         WHERE date >= date(?1, '-' || (julianday(?2) - julianday(?1)) || ' days')
+                           AND date <= date(?1, '-1 day') {d_where}"
+                    );
+                    conn.query_row(
+                        &prev_q,
+                        rusqlite::params![start, end],
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)),
+                    )?
+                } else {
+                    let prev_q = format!(
+                        "SELECT
+                            COALESCE(SUM(total_tokens), 0),
+                            COALESCE(SUM(cost_usd), 0)
+                         FROM usage_events
+                         WHERE date(timestamp) >= date(?1, '-' || (julianday(?2) - julianday(?1)) || ' days')
+                           AND date(timestamp) <= date(?1, '-1 day')"
+                    );
+                    conn.query_row(
+                        &prev_q,
+                        rusqlite::params![start, end],
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)),
+                    )?
+                }
             }
             _ => (0, 0.0),
         };
@@ -522,7 +654,8 @@ pub fn session_events(session_id: i64) -> AppResult<Vec<crate::types::UsageEvent
                     event_type, provider, model, message_role,
                     input_tokens, output_tokens, reasoning_tokens,
                     cache_read_tokens, cache_write_tokens, tool_tokens,
-                    total_tokens, cost_usd, exactness, confidence, raw_json, raw_source_path
+                    total_tokens, cost_usd, exactness, confidence,
+                    raw_json, raw_json_zstd, raw_source_path
              FROM usage_events
              WHERE session_id = ?1 AND ignored = 0
              ORDER BY timestamp ASC",
@@ -553,8 +686,8 @@ pub fn session_events(session_id: i64) -> AppResult<Vec<crate::types::UsageEvent
                     cost_usd: r.get(17)?,
                     exactness,
                     confidence: r.get(19)?,
-                    raw_json: r.get(20)?,
-                    raw_source_path: r.get(21)?,
+                    raw_json: decode_raw_json(r.get(20)?, r.get(21)?),
+                    raw_source_path: r.get(22)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -570,7 +703,8 @@ pub fn list_events(filter: &QueryFilter) -> AppResult<Vec<crate::types::UsageEve
                 event_type, provider, model, message_role,
                 input_tokens, output_tokens, reasoning_tokens,
                 cache_read_tokens, cache_write_tokens, tool_tokens,
-                total_tokens, cost_usd, exactness, confidence, raw_json, raw_source_path
+                total_tokens, cost_usd, exactness, confidence,
+                raw_json, raw_json_zstd, raw_source_path
          FROM usage_events {where_sql}
          ORDER BY timestamp DESC"
     );
@@ -610,13 +744,30 @@ pub fn list_events(filter: &QueryFilter) -> AppResult<Vec<crate::types::UsageEve
                     cost_usd: r.get(17)?,
                     exactness,
                     confidence: r.get(19)?,
-                    raw_json: r.get(20)?,
-                    raw_source_path: r.get(21)?,
+                    raw_json: decode_raw_json(r.get(20)?, r.get(21)?),
+                    raw_source_path: r.get(22)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     })
+}
+
+/// Pick the preferred representation of `raw_json` for a row.
+///
+/// `raw_json_zstd` is a `BLOB` populated by new writes (schema v3+). If
+/// present, decompress it. Otherwise fall back to the legacy `raw_json`
+/// TEXT column for rows written before the migration ran.
+fn decode_raw_json(
+    text: Option<String>,
+    zstd_blob: Option<Vec<u8>>,
+) -> Option<String> {
+    if let Some(blob) = zstd_blob {
+        if let Some(s) = crate::raw_json_codec::decompress(&blob) {
+            return Some(s);
+        }
+    }
+    text
 }
 
 pub fn rebuild_daily_usage() -> AppResult<()> {

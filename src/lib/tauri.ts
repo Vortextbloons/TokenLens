@@ -14,13 +14,26 @@ import type {
   TimeseriesPoint,
   UsageEvent,
 } from "@/types/contracts";
-import { MOCK_BACKEND } from "./mock";
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+// Mock backend is dev-only. In Tauri production builds, `__TAURI_INTERNALS__`
+// is always set, so this branch is unreachable. The dynamic import keeps the
+// ~600-line mock out of the production bundle entirely.
+let mockBackend: Record<string, (args: any) => any> | null = null;
+async function getMockBackend(): Promise<Record<string, (args: any) => any> | null> {
+  if (inTauri) return null;
+  if (mockBackend) return mockBackend;
+  if (!import.meta.env.DEV) return null;
+  const mod = await import("./mock");
+  mockBackend = mod.MOCK_BACKEND as Record<string, (args: any) => any>;
+  return mockBackend;
+}
+
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (!inTauri) {
-    const fn = (MOCK_BACKEND as Record<string, (args: any) => any>)[cmd];
+  const mocks = await getMockBackend();
+  if (mocks) {
+    const fn = mocks[cmd];
     if (typeof fn === "function") {
       return fn(args ?? {}) as Promise<T>;
     }

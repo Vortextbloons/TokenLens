@@ -16,6 +16,7 @@ static DB: OnceCell<Arc<Mutex<Connection>>> = OnceCell::new();
 
 const MIGRATION_001: &str = include_str!("../../migrations/001_init.sql");
 const MIGRATION_002: &str = include_str!("../../migrations/002_cursor_credentials.sql");
+const MIGRATION_003: &str = include_str!("../../migrations/003_compress_raw_json.sql");
 
 struct EmbeddedMigration {
     version: i64,
@@ -33,6 +34,11 @@ const EMBEDDED_MIGRATIONS: &[EmbeddedMigration] = &[
         version: 2,
         name: "002_cursor_credentials.sql",
         sql: MIGRATION_002,
+    },
+    EmbeddedMigration {
+        version: 3,
+        name: "003_compress_raw_json.sql",
+        sql: MIGRATION_003,
     },
 ];
 
@@ -53,6 +59,16 @@ pub fn init(db_path: &Path) -> AppResult<()> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
+    // 8 KB pages are the SQLite default and best for our access pattern
+    // (mostly small writes from ingest, occasional full scans for analytics).
+    // Larger pages would waste space on the mostly-empty trailing pages of
+    // the `usage_events` table after a retention sweep.
+    conn.pragma_update(None, "page_size", 8192_i64)?;
+    // Negative value means "auto-tune up to N bytes" — leave room for the
+    // OS to use the file as anonymous memory without paging.
+    conn.pragma_update(None, "mmap_size", 256_i64 * 1024 * 1024)?;
+    // Keep the WAL file from ballooning on heavy ingest bursts.
+    conn.pragma_update(None, "wal_autocheckpoint", 1000_i64)?;
     run_migrations(&conn)?;
     DB.set(Arc::new(Mutex::new(conn)))
         .map_err(|_| AppError::Internal("DB already initialized".into()))?;
@@ -146,6 +162,126 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
         info!("Applied migration {}", name_str);
     }
     Ok(())
+}
+
+/// Backfill: compress any existing `raw_json` TEXT rows into `raw_json_zstd`
+/// BLOB and clear the TEXT column. Runs once after schema v3. This is
+/// the recovery path for users who already had a large DB before the
+/// compression migration — the next app launch will transparently shrink
+/// the file by 5-10× (the typical zstd ratio for raw JSONL). VACUUMs
+/// the file at the end so the freed pages actually return to the OS
+/// instead of just sitting in SQLite's freelist.
+pub fn backfill_compress_raw_json() -> AppResult<()> {
+    let did_work = with_conn_mut(|conn| {
+        // Quick check: if there are no rows to compress, skip entirely.
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_events
+                 WHERE raw_json IS NOT NULL AND raw_json_zstd IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if pending == 0 {
+            return Ok(false);
+        }
+        info!("Backfilling zstd compression for {pending} raw_json rows...");
+
+        // Process in batches so we don't hold a long-running transaction
+        // and so progress shows up in the log.
+        const BATCH: i64 = 500;
+        let mut offset: i64 = 0;
+        loop {
+            let mut stmt = conn.prepare(
+                "SELECT id, raw_json FROM usage_events
+                 WHERE raw_json IS NOT NULL AND raw_json_zstd IS NULL
+                 ORDER BY id LIMIT ?1 OFFSET ?2",
+            )?;
+            let mut rows = stmt.query(params![BATCH, offset])?;
+            let mut updates: Vec<(i64, Option<Vec<u8>>)> = Vec::new();
+            while let Some(row) = rows.next()? {
+                let id: i64 = row.get(0)?;
+                let text: Option<String> = row.get(1)?;
+                let blob = text.as_deref().and_then(crate::raw_json_codec::compress);
+                updates.push((id, blob));
+            }
+            drop(rows);
+            drop(stmt);
+            if updates.is_empty() {
+                break;
+            }
+            let tx = conn.unchecked_transaction()?;
+            for (id, blob) in &updates {
+                tx.execute(
+                    "UPDATE usage_events
+                     SET raw_json_zstd = ?1, raw_json = NULL
+                     WHERE id = ?2",
+                    params![blob, id],
+                )?;
+            }
+            tx.commit()?;
+            offset += updates.len() as i64;
+            if (updates.len() as i64) < BATCH {
+                break;
+            }
+        }
+        info!("raw_json backfill complete");
+        Ok(true)
+    })?;
+
+    // Only VACUUM if we actually changed rows. VACUUM rewrites the whole
+    // DB file and isn't worth the IO when there's nothing to reclaim.
+    if did_work {
+        info!("Rebuilding DB file to reclaim space from compressed raw_json backfill");
+        with_conn(|conn| {
+            conn.execute_batch("VACUUM;")?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Build `daily_usage` from `usage_events` if it has never been populated
+/// (or was wiped, e.g. after a "Rebuild daily aggregates" that crashed
+/// mid-way). The aggregation queries for the Overview page take a fast
+/// path through `daily_usage`, so a missing or empty table would silently
+/// zero out the rolling-window KPIs. This is intentionally a no-op when
+/// the table is non-empty — full rebuilds on every launch would be
+/// O(N) over all events.
+pub fn ensure_daily_usage_built() -> AppResult<()> {
+    with_conn_mut(|conn| {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM daily_usage", [], |r| r.get(0))
+            .unwrap_or(0);
+        if count > 0 {
+            return Ok(());
+        }
+        let events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_events WHERE ignored = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if events == 0 {
+            // Nothing to aggregate. Skip the rebuild; the user has no
+            // data yet.
+            return Ok(());
+        }
+        info!("daily_usage is empty; warming it up from {events} events");
+        conn.execute_batch(
+            "INSERT INTO daily_usage (date, provider, model, project_id, input_tokens, output_tokens,
+                reasoning_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost_usd, sessions_count)
+             SELECT date(timestamp), provider, model, project_id,
+                    SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens),
+                    SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(total_tokens), SUM(cost_usd),
+                    COUNT(DISTINCT session_id)
+             FROM usage_events WHERE ignored = 0
+             GROUP BY date(timestamp), provider, model, project_id;",
+        )?;
+        info!("daily_usage warm-up complete");
+        Ok(())
+    })
 }
 
 fn apply_embedded_migrations(conn: &Connection, current: i64) -> AppResult<()> {

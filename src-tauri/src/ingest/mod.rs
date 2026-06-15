@@ -353,6 +353,10 @@ pub fn persist_events(events: &[UsageEvent], source_id: i64) -> AppResult<i64> {
         return Ok(0);
     }
     let now = Utc::now().to_rfc3339();
+    // Re-read settings here so all call sites (scan path, sample data,
+    // cursor sync, opencode_db) honour the user's current toggle without
+    // needing to thread a parameter through.
+    let store_raw = settings::load_all().map(|s| s.store_raw_json).unwrap_or(true);
     db::with_conn_mut(|conn| {
         let tx = conn.unchecked_transaction()?;
         let mut inserted = 0i64;
@@ -391,14 +395,29 @@ pub fn persist_events(events: &[UsageEvent], source_id: i64) -> AppResult<i64> {
                 None
             };
 
+            // Only persist raw_json when the user opted in. New writes
+            // (schema v3+) store a zstd-compressed BLOB; the legacy TEXT
+            // column is left NULL to avoid duplicating the payload across
+            // two columns. The read path in `aggregation::decode_raw_json`
+            // transparently decompresses the BLOB and falls back to TEXT
+            // for rows written before this migration.
+            let raw_blob: Option<Vec<u8>> = if store_raw {
+                ev.raw_json
+                    .as_deref()
+                    .and_then(crate::raw_json_codec::compress)
+            } else {
+                None
+            };
+            let raw_text: Option<String> = None;
             let r = tx.execute(
                 "INSERT OR IGNORE INTO usage_events
                   (event_hash, timestamp, source_id, session_id, event_type, provider, model,
                    message_role, input_tokens, output_tokens, reasoning_tokens,
                    cache_read_tokens, cache_write_tokens, tool_tokens, total_tokens,
-                   cost_usd, exactness, confidence, raw_json, raw_source_path, created_at)
+                   cost_usd, exactness, confidence, raw_json, raw_json_zstd,
+                   raw_source_path, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                         ?16, ?17, ?18, ?19, ?20, ?21)",
+                         ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     ev.event_hash,
                     ev.timestamp.to_rfc3339(),
@@ -418,7 +437,8 @@ pub fn persist_events(events: &[UsageEvent], source_id: i64) -> AppResult<i64> {
                     ev.cost_usd,
                     ev.exactness.as_str(),
                     ev.confidence,
-                    ev.raw_json,
+                    raw_text,
+                    raw_blob,
                     ev.raw_source_path,
                     now,
                 ],

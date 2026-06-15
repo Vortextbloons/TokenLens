@@ -8,6 +8,7 @@ pub mod db;
 pub mod errors;
 pub mod ingest;
 pub mod pricing;
+pub mod raw_json_codec;
 pub mod redaction;
 pub mod scan;
 pub mod settings;
@@ -18,11 +19,10 @@ pub mod watcher;
 use std::path::PathBuf;
 use tauri::Manager;
 use tracing::{info, warn};
-use tracing_appender::non_blocking::WorkerGuard;
 
-/// Initialize logging. Returns a guard that must be kept alive for the
-/// duration of the program.
-pub fn init_logging(debug: bool) -> Option<WorkerGuard> {
+/// Initialize logging. Returns a writer guard that should be kept alive for
+/// the duration of the program (drops the file handle on shutdown).
+pub fn init_logging(debug: bool) -> Option<tracing_appender_shim::FileWriter> {
     let filter = if debug {
         "tokenlens_lib=debug,tokenlens=debug,info"
     } else {
@@ -35,15 +35,23 @@ pub fn init_logging(debug: bool) -> Option<WorkerGuard> {
     let log_dir = app_data_dir().map(|p| p.join("logs"));
     if let Some(dir) = log_dir {
         if std::fs::create_dir_all(&dir).is_ok() {
-            let file_appender = tracing_appender::rolling::daily(&dir, "tokenlens.log");
-            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-            let subscriber = tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .with_writer(non_blocking)
-                .with_ansi(false)
-                .finish();
-            let _ = tracing::subscriber::set_global_default(subscriber);
-            return Some(guard);
+            let path = dir.join("tokenlens.log");
+            // Daily rolling: append date suffix when the day rolls over.
+            match tracing_appender_shim::FileWriter::open(&path) {
+                Ok(writer) => {
+                    let make_writer = writer.clone();
+                    let subscriber = tracing_subscriber::fmt()
+                        .with_env_filter(env_filter)
+                        .with_writer(move || make_writer.clone())
+                        .with_ansi(false)
+                        .finish();
+                    let _ = tracing::subscriber::set_global_default(subscriber);
+                    return Some(writer);
+                }
+                Err(e) => {
+                    warn!("failed to open log file {}: {e}", path.display());
+                }
+            }
         }
     }
     let subscriber = tracing_subscriber::fmt()
@@ -52,6 +60,110 @@ pub fn init_logging(debug: bool) -> Option<WorkerGuard> {
         .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
     None
+}
+
+mod tracing_appender_shim {
+    use std::fs::{File, OpenOptions};
+    use std::io::{self, Write};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// A minimal "rolling daily" file writer. Opens (or creates) the given
+    /// path. When the current date (UTC) changes since the last write, the
+    /// file is renamed with a `YYYY-MM-DD` suffix and a new file is opened.
+    /// Stands in for the heavier `tracing-appender` crate to keep the
+    /// binary small.
+    #[derive(Clone)]
+    pub struct FileWriter {
+        inner: std::sync::Arc<Mutex<Inner>>,
+    }
+
+    struct Inner {
+        current_path: PathBuf,
+        current_date: String,
+        file: File,
+    }
+
+    impl FileWriter {
+        pub fn open(path: &Path) -> io::Result<Self> {
+            let file = OpenOptions::new().create(true).append(true).open(path)?;
+            let writer = Self {
+                inner: std::sync::Arc::new(Mutex::new(Inner {
+                    current_path: path.to_path_buf(),
+                    current_date: today_utc(),
+                    file,
+                })),
+            };
+            Ok(writer)
+        }
+    }
+
+    impl Write for FileWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut g = self.inner.lock().unwrap();
+            let today = today_utc();
+            if today != g.current_date {
+                // Roll the file: flush the current descriptor (drop), rename
+                // with the previous date stamp, and open a fresh one.
+                let prev = g.current_path.clone();
+                let stem = prev
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("tokenlens")
+                    .to_string();
+                let ext = prev
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("log")
+                    .to_string();
+                let rotated = prev.with_file_name(format!("{stem}-{}.{}", g.current_date, ext));
+                let _ = std::fs::rename(&prev, &rotated);
+                g.file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&prev)?;
+                g.current_date = today;
+            }
+            g.file.write(buf)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            let mut g = self.inner.lock().unwrap();
+            g.file.flush()
+        }
+    }
+
+    fn today_utc() -> String {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let days = secs / 86_400;
+        let (y, m, d) = civil_from_days(days);
+        format!("{y:04}-{m:02}-{d:02}")
+    }
+
+    /// Howard Hinnant's date algorithm — convert days-since-epoch to (Y, M, D).
+    fn civil_from_days(z: i64) -> (i32, u32, u32) {
+        let z = z + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = (z - era * 146_097) as u32;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+        let y = (yoe as i32) + (era as i32) * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+        let y = if m <= 2 { y + 1 } else { y };
+        (y, m, d)
+    }
+
+    impl Drop for FileWriter {
+        fn drop(&mut self) {
+            // Best-effort flush; close happens via Drop on inner.file.
+            let _ = self.flush();
+        }
+    }
 }
 
 pub fn app_data_dir() -> Option<PathBuf> {
@@ -89,6 +201,23 @@ pub fn run() {
 
     info!("TokenLens starting up");
 
+    // One-time backfill: compress any raw_json TEXT rows left over from
+    // before schema v3. The DB will only see a meaningful shrink the
+    // first time this runs; subsequent launches are no-ops.
+    if let Err(e) = db::backfill_compress_raw_json() {
+        warn!("raw_json backfill failed: {e}");
+    }
+
+    // Populate `daily_usage` if it has never been built. The aggregation
+    // queries in `overview()` take a fast path through this pre-aggregated
+    // table, so an empty `daily_usage` would silently zero out the
+    // rolling-window KPIs. We only trigger when the table is empty to
+    // avoid an O(N) rebuild on every launch.
+    if let Err(e) = db::ensure_daily_usage_built() {
+        warn!("daily_usage warm-up failed: {e}");
+    }
+
+    #[cfg(feature = "cursor")]
     collectors::cursor::start_periodic_sync();
 
     tauri::Builder::default()
@@ -152,10 +281,15 @@ pub fn run() {
             commands::generate_sample_data,
             commands::purge_sample_data,
             commands::scan_inbox,
+            #[cfg(feature = "cursor")]
             commands::cursor_start_login,
+            #[cfg(feature = "cursor")]
             commands::cursor_connect_with_token,
+            #[cfg(feature = "cursor")]
             commands::cursor_disconnect,
+            #[cfg(feature = "cursor")]
             commands::cursor_get_status,
+            #[cfg(feature = "cursor")]
             commands::cursor_sync_now,
             alerts::list_alerts,
             alerts::acknowledge_alert,
