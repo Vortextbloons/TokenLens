@@ -717,7 +717,7 @@ export function Settings() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pricing.map((p) => (
+                  {pricing.filter((p) => !["opencode-go", "opencode", "github-copilot", "cursor"].includes(p.provider)).map((p) => (
                     <tr key={`${p.provider}-${p.model}`} className="border-b hover:bg-muted/30">
                       <td className="p-3 font-medium">{p.provider}</td>
                       <td className="p-3">{p.model}</td>

@@ -20,7 +20,7 @@ export function formatFull(n: number): string {
 export function formatUsd(n: number): string {
   if (!isFinite(n)) return "$0.00";
   if (Math.abs(n) < 0.01 && n !== 0) return "<$0.01";
-  return "$" + n.toFixed(n < 1 ? 4 : 2);
+  return "$" + n.toFixed(2);
 }
 
 export function formatPercent(n: number): string {
