@@ -2,6 +2,35 @@
 
 import type { ModelPricing } from "@/types/contracts";
 
+type ProviderAlias = {
+  nativeProvider: string;
+  modelMap?: Record<string, string>;
+};
+
+const AGGREGATOR_ALIASES: Record<string, ProviderAlias[]> = {
+  "opencode-go": [
+    { nativeProvider: "zhipu" },
+    { nativeProvider: "moonshot" },
+    { nativeProvider: "deepseek" },
+    { nativeProvider: "xiaomi" },
+    { nativeProvider: "minimax" },
+    {
+      nativeProvider: "qwen",
+      modelMap: {
+        "qwen3.7-max": "qwen-3.7-max",
+        "qwen3.7-plus": "qwen-3.7-plus",
+        "qwen3.6-plus": "qwen-3.6-plus",
+      },
+    },
+  ],
+  nvidia: [
+    {
+      nativeProvider: "zhipu",
+      modelMap: { "z-ai/glm5": "glm-5" },
+    },
+  ],
+};
+
 export function resolvePricing(
   provider: string,
   model: string,
@@ -13,6 +42,16 @@ export function resolvePricing(
   if (any) return any;
   if (provider === "local" || provider === "lmstudio") {
     return table.find((p) => p.provider === "local" && p.model === "any") ?? null;
+  }
+  const aliases = AGGREGATOR_ALIASES[provider];
+  if (aliases) {
+    for (const alias of aliases) {
+      const nativeModel = alias.modelMap?.[model] ?? model;
+      const hit = table.find(
+        (p) => p.provider === alias.nativeProvider && p.model === nativeModel,
+      );
+      if (hit) return hit;
+    }
   }
   return null;
 }
