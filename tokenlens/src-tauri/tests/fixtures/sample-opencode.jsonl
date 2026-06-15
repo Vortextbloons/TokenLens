@@ -1,0 +1,10 @@
+{"type":"message.updated","timestamp":"2026-06-10T09:14:21.123Z","sessionID":"sess-001","modelID":"gpt-4o","providerID":"openai","info":{"tokens":{"input":1234,"output":567,"total":1801},"cost":0.012}}
+{"type":"message.updated","timestamp":"2026-06-10T09:15:02.456Z","sessionID":"sess-001","modelID":"gpt-4o","providerID":"openai","info":{"tokens":{"input":1820,"output":412,"total":2232,"cache_read":900},"cost":0.0145}}
+{"type":"message.updated","timestamp":"2026-06-10T09:32:11.789Z","sessionID":"sess-002","modelID":"claude-sonnet-4-5","providerID":"anthropic","info":{"tokens":{"input":2100,"output":980,"total":3080,"cache_read":1200},"cost":0.0432}}
+{"type":"step.finish","timestamp":"2026-06-10T09:33:00.000Z","sessionID":"sess-002","modelID":"claude-sonnet-4-5","providerID":"anthropic","tokens":{"input":50,"output":75,"total":125}}
+{"type":"message.updated","timestamp":"2026-06-10T11:05:00.000Z","sessionID":"sess-003","modelID":"o1-mini","providerID":"openai","info":{"tokens":{"input":850,"output":420,"total":1270,"reasoning":180},"cost":0.0099}}
+{"type":"message.updated","timestamp":"2026-06-10T14:22:00.000Z","sessionID":"sess-004","modelID":"gemini-2.5-flash","providerID":"google","info":{"tokens":{"input":2100,"output":780,"total":2880},"cost":0.0004}}
+{"type":"message.updated","timestamp":"2026-06-10T15:50:00.000Z","sessionID":"sess-005","modelID":"llama-3.1-8b","providerID":"local","info":{"tokens":{"input":1300,"output":560,"total":1860},"cost":0}}
+{"type":"message.updated","timestamp":"2026-06-11T08:14:21.123Z","sessionID":"sess-006","modelID":"gpt-4.1","providerID":"openai","info":{"tokens":{"input":1700,"output":620,"total":2320,"cache_read":1000},"cost":0.0084}}
+{"type":"message.updated","timestamp":"2026-06-11T10:11:11.111Z","sessionID":"sess-007","modelID":"claude-haiku-4","providerID":"anthropic","info":{"tokens":{"input":2100,"output":800,"total":2900,"cache_read":1500},"cost":0.0038}}
+{"type":"message.updated","timestamp":"2026-06-11T13:45:00.000Z","sessionID":"sess-008","modelID":"o3-mini","providerID":"openai","info":{"tokens":{"input":900,"output":350,"total":1250,"reasoning":140},"cost":0.0046}}

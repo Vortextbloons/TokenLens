@@ -1,0 +1,284 @@
+import { useEffect, useState } from "react";
+import { useFilter } from "@/stores/filter";
+import { getOverviewStats, getUsageTimeseries, getBreakdown, listAlerts, evaluateBudgets } from "@/lib/tauri";
+import type { OverviewStats, TimeseriesPoint, Breakdown } from "@/types/contracts";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { StatCard, TokensCard, CostCard } from "@/components/cards/StatCard";
+import { Card, CardContent, CardHeader, CardTitle, Skeleton } from "@/components/ui/primitives";
+import { TokensAreaChart, CostLineChart, ModelBarChart, ProviderDonut } from "@/charts";
+import { Cpu, DollarSign, MessageSquare, TrendingUp, AlertTriangle, Sparkles, Database, X } from "lucide-react";
+import { formatNumber, formatPercent, formatUsd } from "@/lib/utils";
+import { Button } from "@/components/ui/primitives";
+import { isTauri, generateSampleData } from "@/lib/tauri";
+import { toast } from "@/stores/toast";
+import { EmptyState } from "@/components/layout/PageHeader";
+
+interface AlertRow {
+  id: number;
+  alert_type: string;
+  severity: string;
+  title: string;
+  message: string;
+  created_at: string;
+  acknowledged_at: string | null;
+}
+
+export function Overview() {
+  const filter = useFilter((s) => s.toFilter());
+  const [stats, setStats] = useState<OverviewStats | null>(null);
+  const [series, setSeries] = useState<TimeseriesPoint[]>([]);
+  const [models, setModels] = useState<Breakdown[]>([]);
+  const [providers, setProviders] = useState<Breakdown[]>([]);
+  const [alerts, setAlerts] = useState<AlertRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const [s, ts, mb, pb] = await Promise.all([
+        getOverviewStats(filter),
+        getUsageTimeseries(filter),
+        getBreakdown(filter, "model"),
+        getBreakdown(filter, "provider"),
+      ]);
+      setStats(s);
+      setSeries(ts);
+      setModels(mb);
+      setProviders(pb);
+      // Best-effort alerts (command may not exist in mock mode)
+      try {
+        if (isTauri) await evaluateBudgets();
+        setAlerts(await listAlerts(10));
+      } catch { /* ignore */ }
+    } catch (e: any) {
+      toast({ title: "Failed to load overview", description: String(e), variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [JSON.stringify(filter)]);
+
+  const onSeed = async () => {
+    try {
+      const n = await generateSampleData();
+      toast({ title: `Inserted ${n} sample events`, variant: "success" });
+      reload();
+    } catch (e: any) {
+      toast({ title: "Sample data failed", description: String(e), variant: "destructive" });
+    }
+  };
+
+  if (loading && !stats) {
+    return (
+      <div>
+        <PageHeader title="Overview" description="Real-time AI token and cost analytics — all local." />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-28" />)}
+        </div>
+      </div>
+    );
+  }
+
+  const unacknowledgedAlerts = alerts.filter((a) => !a.acknowledged_at);
+
+  const empty = stats && stats.sessions_count === 0 && stats.tokens_month === 0;
+
+  return (
+    <div className="animate-fade-in">
+      <PageHeader
+        title="Overview"
+        description="All your AI token and cost signals in one place. Nothing leaves this device."
+        actions={
+          empty ? (
+            <Button onClick={onSeed}>
+              <Sparkles className="h-4 w-4" /> Generate sample data
+            </Button>
+          ) : null
+        }
+      />
+
+      {unacknowledgedAlerts.length > 0 ? (
+        <div className="mb-6 space-y-2">
+          {unacknowledgedAlerts.slice(0, 3).map((a) => (
+            <div
+              key={a.id}
+              className={`flex items-start gap-3 p-3 rounded-md border text-sm ${
+                a.severity === "critical"
+                  ? "border-destructive/50 bg-destructive/5"
+                  : "border-amber-500/40 bg-amber-500/5"
+              }`}
+            >
+              <AlertTriangle className={`h-4 w-4 mt-0.5 shrink-0 ${a.severity === "critical" ? "text-destructive" : "text-amber-500"}`} />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium">{a.title}</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{a.message}</div>
+              </div>
+              <button
+                onClick={async () => {
+                  try {
+                    const { acknowledgeAlert } = await import("@/lib/tauri");
+                    await acknowledgeAlert(a.id);
+                    setAlerts((al) => al.map((x) => x.id === a.id ? { ...x, acknowledged_at: new Date().toISOString() } : x));
+                  } catch {}
+                }}
+                className="text-muted-foreground hover:text-foreground"
+                title="Dismiss"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {empty ? (
+        <EmptyState
+          title="No data yet"
+          description={
+            isTauri
+              ? "Add a source in Settings, point it at your OpenCode log folder, and click Scan. Or generate sample data to explore the dashboard."
+              : "You're running in browser mode with mock data. The Tauri build will connect to your local logs."
+          }
+          action={
+            isTauri ? (
+              <Button onClick={onSeed}>
+                <Sparkles className="h-4 w-4" /> Generate sample data
+              </Button>
+            ) : null
+          }
+        />
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <TokensCard value={stats!.tokens_today} hint="tokens today" />
+            <TokensCard value={stats!.tokens_week} hint="last 7 days" />
+            <CostCard value={stats!.cost_today_usd} hint="USD today" />
+            <CostCard value={stats!.cost_month_usd} hint="USD last 30 days" />
+            <StatCard
+              title="Most used model"
+              value={stats!.most_used_model ?? "—"}
+              hint="by token count"
+              icon={Cpu}
+            />
+            <StatCard
+              title="Most expensive model"
+              value={stats!.most_expensive_model ?? "—"}
+              hint="by cost"
+              icon={DollarSign}
+            />
+            <StatCard
+              title="Sessions"
+              value={formatNumber(stats!.sessions_count)}
+              hint="unique sessions"
+              icon={MessageSquare}
+            />
+            <StatCard
+              title="Avg tokens / session"
+              value={formatNumber(stats!.avg_tokens_per_session)}
+              icon={TrendingUp}
+            />
+            <StatCard
+              title="Reasoning"
+              value={formatPercent(stats!.reasoning_token_pct)}
+              hint="of all tokens"
+            />
+            <StatCard
+              title="Input : Output"
+              value={
+                stats!.input_output_ratio > 0
+                  ? `${stats!.input_output_ratio.toFixed(2)} : 1`
+                  : "—"
+              }
+            />
+            <StatCard
+              title="Cache savings"
+              value={formatUsd(stats!.cache_savings_usd)}
+              hint="estimated"
+            />
+            <StatCard
+              title="Largest session"
+              value={formatNumber(stats!.largest_session_tokens)}
+              hint="tokens in one session"
+              icon={AlertTriangle}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">Token usage over time</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {series.length > 0 ? <TokensAreaChart data={series} /> : <EmptyState title="No timeseries data" />}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">Cost over time</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {series.length > 0 ? <CostLineChart data={series} /> : <EmptyState title="No cost data" />}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">Usage by model</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {models.length > 0 ? <ModelBarChart data={models} /> : <EmptyState title="No model data" />}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm font-medium">Usage by provider</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {providers.length > 0 ? <ProviderDonut data={providers} /> : <EmptyState title="No provider data" />}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card className="mt-6">
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">Data quality</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <div className="text-emerald-500 text-2xl font-semibold tabular-nums">
+                    {formatNumber(stats!.exactness_mix.exact)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">Exact events</div>
+                </div>
+                <div>
+                  <div className="text-amber-500 text-2xl font-semibold tabular-nums">
+                    {formatNumber(stats!.exactness_mix.estimated)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">Estimated events</div>
+                </div>
+                <div>
+                  <div className="text-blue-500 text-2xl font-semibold tabular-nums">
+                    {formatNumber(stats!.exactness_mix.mixed)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">Mixed events</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500 text-2xl font-semibold tabular-nums">
+                    {formatNumber(stats!.exactness_mix.unknown)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">Unknown events</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="mt-4 text-[10px] text-muted-foreground flex items-center gap-1">
+            <Database className="h-3 w-3" />
+            All analytics computed locally. No external API calls.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,11 @@
+{
+  "name": "tokenlens-opencode-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenCode plugin that pipes token usage to TokenLens via JSONL inbox. No network calls, no tokenization, no blocking I/O.",
+  "main": "tokenlens.ts",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
