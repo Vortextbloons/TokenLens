@@ -10,16 +10,13 @@ jobs:
   frontend-lint:
     name: Frontend (lint + typecheck)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: tokenlens
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: tokenlens/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
@@ -29,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: tokenlens/src-tauri
+        working-directory: src-tauri
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -37,5 +34,5 @@ jobs:
           toolchain: 1.77.0
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tokenlens/src-tauri -> target
+          workspaces: src-tauri -> target
       - run: cargo test --lib --all-features
