@@ -45,8 +45,8 @@ jobs:
             throw "TAURI_SIGNING_PRIVATE_KEY secret is not set."
           }
 
-          function Resolve-MinisignKeyText([string]$Input) {
-            $candidate = $Input.Trim()
+          function Resolve-MinisignKeyText([string]$KeyMaterial) {
+            $candidate = $KeyMaterial.Trim()
 
             if ($candidate.StartsWith('untrusted comment:')) {
               return $candidate
@@ -54,8 +54,9 @@ jobs:
 
             for ($i = 0; $i -lt 2; $i++) {
               try {
+                $clean = ($candidate -replace '\s', '')
                 $decoded = [Text.Encoding]::UTF8.GetString(
-                  [Convert]::FromBase64String($candidate)
+                  [Convert]::FromBase64String($clean)
                 ).Trim()
               } catch {
                 break
