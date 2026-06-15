@@ -26,8 +26,6 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.77.0
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -44,5 +42,5 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'TokenLens ${{ github.ref_name }}'
           releaseBody: 'Windows installer for TokenLens ${{ github.ref_name }}.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false

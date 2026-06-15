@@ -62,7 +62,7 @@ export function Sidebar() {
       </nav>
       <div className="p-3 border-t text-[10px] text-muted-foreground">
         <div>No telemetry. No AI. No cloud.</div>
-        <div className="mt-1 opacity-60">v0.1.0</div>
+        <div className="mt-1 opacity-60">v0.2.0</div>
       </div>
     </aside>
   );
