@@ -759,22 +759,19 @@ pub struct BulkImportSummary {
 }
 
 /// Return (provider, model) pairs that appear in `usage_events` (not ignored)
-/// but have no row in `model_pricing`. Sorted by total tokens descending so
-/// the highest-impact missing models come first.
+/// but cannot be priced via direct rows or aggregator → first-party resolution.
+/// Sorted by total tokens descending so the highest-impact missing models come first.
 pub fn list_missing() -> AppResult<Vec<MissingPricingRow>> {
-    db::with_conn(|conn| {
+    let rows: Vec<MissingPricingRow> = db::with_conn(|conn| {
         let mut stmt = conn.prepare(
             "SELECT e.provider, e.model,
                     COUNT(*) AS events,
                     COALESCE(SUM(e.total_tokens), 0) AS total_tokens,
                     COALESCE(SUM(e.cost_usd), 0) AS current_cost_usd
              FROM usage_events e
-             LEFT JOIN model_pricing p
-               ON p.provider = e.provider AND p.model = e.model
              WHERE e.ignored = 0
                AND e.provider IS NOT NULL
                AND e.model IS NOT NULL
-               AND p.id IS NULL
              GROUP BY e.provider, e.model
              ORDER BY total_tokens DESC",
         )?;
@@ -790,7 +787,12 @@ pub fn list_missing() -> AppResult<Vec<MissingPricingRow>> {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
-    })
+    })?;
+
+    Ok(rows
+        .into_iter()
+        .filter(|r| !is_resolved(&r.provider, &r.model))
+        .collect())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1065,5 +1067,26 @@ mod tests {
     fn cursor_composer_uses_builtin_rates() {
         let p = resolve("cursor", "composer-2.5").unwrap();
         assert!((p.input_price_per_million - 0.50).abs() < 1e-9);
+    }
+
+    #[test]
+    fn aggregator_kimi_not_counted_as_missing() {
+        seed(ModelPricing {
+            id: None,
+            provider: "moonshot".into(),
+            model: "kimi-k2.5".into(),
+            input_price_per_million: 0.375,
+            output_price_per_million: 1.90,
+            reasoning_price_per_million: 0.0,
+            cache_read_price_per_million: 0.07,
+            cache_write_price_per_million: 0.0,
+            currency: "USD".into(),
+            effective_date: None,
+            is_local: false,
+            source: "test".into(),
+            updated_at: String::new(),
+        });
+        assert!(is_resolved("opencode-go", "kimi-k2.5"));
+        assert!(!is_resolved("opencode-go", "kimi-k9-unknown"));
     }
 }
