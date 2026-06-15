@@ -60,14 +60,11 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
         );",
     )?;
 
-    let current: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(version) FROM schema_version",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let current = current.unwrap_or(0);
+    let current: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+        [],
+        |r| r.get(0),
+    )?;
 
     // Migrations are in src-tauri/migrations/*.sql, ordered numerically.
     let migrations_dir = migrations_path();
@@ -103,9 +100,9 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
             continue;
         }
         let sql = std::fs::read_to_string(entry.path())?;
-        let tx = conn.unchecked_transaction()?;
-        tx.execute_batch(&sql)?;
-        tx.commit()?;
+        // Migrations may include PRAGMAs or other statements that cannot run
+        // inside an explicit transaction.
+        conn.execute_batch(&sql)?;
         info!("Applied migration {}", name_str);
     }
     Ok(())

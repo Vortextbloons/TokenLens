@@ -4,48 +4,64 @@
 
 use crate::db;
 use crate::errors::AppResult;
+use crate::pricing;
 use crate::types::{
     Breakdown, ExactnessMix, OverviewStats, QueryFilter, Session, TimeseriesPoint,
 };
 use rusqlite::{params, OptionalExtension};
 
-fn build_where(f: &QueryFilter) -> (String, Vec<rusqlite::types::Value>) {
+fn col(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}.{name}")
+    }
+}
+
+fn build_where_clauses(
+    f: &QueryFilter,
+    include_dates: bool,
+    prefix: &str,
+) -> (String, Vec<rusqlite::types::Value>) {
     use rusqlite::types::Value as V;
     let mut clauses: Vec<String> = Vec::new();
     let mut args: Vec<V> = Vec::new();
-    clauses.push("ignored = 0".to_string());
-    if let Some(d) = &f.start_date {
-        clauses.push("date(timestamp) >= date(?1)".into());
-        args.push(V::Text(d.clone()));
-    }
-    if let Some(d) = &f.end_date {
-        let ph = args.len() + 1;
-        clauses.push(format!("date(timestamp) <= date(?{ph})"));
-        args.push(V::Text(d.clone()));
+    clauses.push(format!("{} = 0", col(prefix, "ignored")));
+    if include_dates {
+        let ts = col(prefix, "timestamp");
+        if let Some(d) = &f.start_date {
+            clauses.push(format!("date({ts}) >= date(?1)"));
+            args.push(V::Text(d.clone()));
+        }
+        if let Some(d) = &f.end_date {
+            let ph = args.len() + 1;
+            clauses.push(format!("date({ts}) <= date(?{ph})"));
+            args.push(V::Text(d.clone()));
+        }
     }
     if let Some(p) = f.project_id {
         let ph = args.len() + 1;
-        clauses.push(format!("project_id = ?{ph}"));
+        clauses.push(format!("{} = ?{ph}", col(prefix, "project_id")));
         args.push(V::Integer(p));
     }
     if let Some(p) = &f.provider {
         let ph = args.len() + 1;
-        clauses.push(format!("provider = ?{ph}"));
+        clauses.push(format!("{} = ?{ph}", col(prefix, "provider")));
         args.push(V::Text(p.clone()));
     }
     if let Some(m) = &f.model {
         let ph = args.len() + 1;
-        clauses.push(format!("model = ?{ph}"));
+        clauses.push(format!("{} = ?{ph}", col(prefix, "model")));
         args.push(V::Text(m.clone()));
     }
     if let Some(s) = f.source_id {
         let ph = args.len() + 1;
-        clauses.push(format!("source_id = ?{ph}"));
+        clauses.push(format!("{} = ?{ph}", col(prefix, "source_id")));
         args.push(V::Integer(s));
     }
     if let Some(e) = &f.exactness {
         let ph = args.len() + 1;
-        clauses.push(format!("exactness = ?{ph}"));
+        clauses.push(format!("{} = ?{ph}", col(prefix, "exactness")));
         args.push(V::Text(e.clone()));
     }
     let where_sql = if clauses.is_empty() {
@@ -56,26 +72,38 @@ fn build_where(f: &QueryFilter) -> (String, Vec<rusqlite::types::Value>) {
     (where_sql, args)
 }
 
+/// Full filter including the user's selected date range (charts, breakdowns).
+fn build_where(f: &QueryFilter) -> (String, Vec<rusqlite::types::Value>) {
+    build_where_clauses(f, true, "")
+}
+
+/// Dimension filters only — excludes start/end dates.
+fn build_dimension_where(f: &QueryFilter) -> (String, Vec<rusqlite::types::Value>) {
+    build_where_clauses(f, false, "")
+}
+
+/// Event-table filter with alias prefix (e.g. `e` for joins).
+fn build_event_where(f: &QueryFilter) -> (String, Vec<rusqlite::types::Value>) {
+    build_where_clauses(f, true, "e")
+}
+
 pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
     let (where_sql, args) = build_where(filter);
+    let (rolling_where_sql, rolling_args) = build_dimension_where(filter);
     db::with_conn(|conn| {
-        // Tokens / cost today / week / month
+        // Fixed rolling windows — intentionally ignore the topbar date range.
         let q = format!(
             "SELECT
                 COALESCE(SUM(CASE WHEN date(timestamp)=date('now') THEN total_tokens ELSE 0 END), 0) AS tokens_today,
-                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-7 days') THEN total_tokens ELSE 0 END), 0) AS tokens_week,
-                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-30 days') THEN total_tokens ELSE 0 END), 0) AS tokens_month,
+                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-6 days') THEN total_tokens ELSE 0 END), 0) AS tokens_week,
+                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-29 days') THEN total_tokens ELSE 0 END), 0) AS tokens_month,
                 COALESCE(SUM(CASE WHEN date(timestamp)=date('now') THEN cost_usd ELSE 0 END), 0) AS cost_today,
-                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-7 days') THEN cost_usd ELSE 0 END), 0) AS cost_week,
-                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-30 days') THEN cost_usd ELSE 0 END), 0) AS cost_month,
-                COALESCE(SUM(input_tokens), 0) AS in_t,
-                COALESCE(SUM(output_tokens), 0) AS out_t,
-                COALESCE(SUM(reasoning_tokens), 0) AS reas_t,
-                COALESCE(SUM(cache_read_tokens), 0) AS cache_t
-             FROM usage_events {where_sql}",
+                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-6 days') THEN cost_usd ELSE 0 END), 0) AS cost_week,
+                COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-29 days') THEN cost_usd ELSE 0 END), 0) AS cost_month
+             FROM usage_events {rolling_where_sql}",
         );
         let mut stmt = conn.prepare(&q)?;
-        let row = stmt.query_row(rusqlite::params_from_iter(args.iter()), |r| {
+        let row = stmt.query_row(rusqlite::params_from_iter(rolling_args.iter()), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, i64>(1)?,
@@ -83,13 +111,34 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
                 r.get::<_, f64>(3)?,
                 r.get::<_, f64>(4)?,
                 r.get::<_, f64>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, i64>(7)?,
-                r.get::<_, i64>(8)?,
-                r.get::<_, i64>(9)?,
             ))
         })?;
-        let (tokens_today, tokens_week, tokens_month, cost_today, cost_week, cost_month, in_t, out_t, reas_t, cache_t) = row;
+        let (tokens_today, tokens_week, tokens_month, cost_today, cost_week, cost_month) = row;
+        drop(stmt);
+
+        // Period-scoped aggregates for the selected date range.
+        let q_period = format!(
+            "SELECT
+                COALESCE(SUM(total_tokens), 0) AS period_tokens,
+                COALESCE(SUM(input_tokens), 0) AS in_t,
+                COALESCE(SUM(output_tokens), 0) AS out_t,
+                COALESCE(SUM(reasoning_tokens), 0) AS reas_t,
+                COALESCE(SUM(cache_read_tokens), 0) AS cache_t
+             FROM usage_events {where_sql}",
+        );
+        let mut stmt = conn.prepare(&q_period)?;
+        let (period_tokens, in_t, out_t, reas_t, _cache_t) = stmt.query_row(
+            rusqlite::params_from_iter(args.iter()),
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            },
+        )?;
         drop(stmt);
 
         // Most used model
@@ -120,14 +169,18 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
             )
             .optional()?;
 
-        // Largest session
+        // Largest session within the active filter window.
         let q4 = format!(
-            "SELECT id, total_tokens FROM sessions
-             WHERE total_tokens > 0
-             ORDER BY total_tokens DESC LIMIT 1",
+            "SELECT session_id, SUM(total_tokens) AS t
+             FROM usage_events {where_sql} AND session_id IS NOT NULL
+             GROUP BY session_id ORDER BY t DESC LIMIT 1",
         );
         let largest = conn
-            .query_row(&q4, [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .query_row(
+                &q4,
+                rusqlite::params_from_iter(args.iter()),
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )
             .optional()?;
 
         // Sessions count
@@ -138,9 +191,9 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
             |r| r.get(0),
         )?;
 
-        // Avg tokens / session
+        // Avg tokens / session within the selected date range.
         let avg: f64 = if sessions_count > 0 {
-            (tokens_month.max(0) as f64) / (sessions_count as f64)
+            (period_tokens.max(0) as f64) / (sessions_count as f64)
         } else {
             0.0
         };
@@ -156,10 +209,34 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
             0.0
         };
 
-        // Cache savings (approx: cache_read * input_price)
-        // Simplified: we'll compute as cache_read * 0.5 * (input price average)
-        // For v1, use a flat $1.25 / 1M tokens saving estimate based on cache discount.
-        let cache_savings = (cache_t as f64) * 1.25 / 1_000_000.0;
+        // Cache savings: per-model (input_rate - cache_rate) * cache_read tokens.
+        let q_cache = format!(
+            "SELECT COALESCE(SUM(
+                e.cache_read_tokens * MAX(0.0,
+                    COALESCE(mp.input_price_per_million, 0) - COALESCE(mp.cache_read_price_per_million, 0)
+                ) / 1000000.0
+             ), 0.0)
+             FROM usage_events e
+             LEFT JOIN model_pricing mp ON mp.provider = e.provider AND mp.model = e.model
+             {where_sql}",
+        );
+        let cache_savings: f64 = conn.query_row(
+            &q_cache,
+            rusqlite::params_from_iter(args.iter()),
+            |r| r.get(0),
+        )?;
+
+        let unpriced_sql = pricing::unpriced_event_sql("e");
+        let q_unpriced = format!(
+            "SELECT COUNT(*), COALESCE(SUM(e.total_tokens), 0)
+             FROM usage_events e
+             {where_sql} AND ({unpriced_sql})",
+        );
+        let (unpriced_events, unpriced_tokens): (i64, i64) = conn.query_row(
+            &q_unpriced,
+            rusqlite::params_from_iter(args.iter()),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
 
         // Exactness mix
         let q6 = format!(
@@ -196,6 +273,8 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
             reasoning_token_pct: reasoning_pct,
             cache_savings_usd: cache_savings,
             sessions_count,
+            unpriced_events,
+            unpriced_tokens,
             exactness_mix: mix,
         })
     })
@@ -282,40 +361,37 @@ pub fn breakdown_by(
 }
 
 pub fn list_sessions(filter: &QueryFilter) -> AppResult<Vec<Session>> {
-    let mut q = String::from(
-        "SELECT id, source_session_id, source_id, project_id, title, started_at,
-                last_seen_at, provider, model, total_tokens, total_cost_usd,
-                exactness, raw_ref
-         FROM sessions WHERE 1=1",
-    );
-    let mut args: Vec<rusqlite::types::Value> = vec![];
+    let (where_sql, mut args) = build_event_where(filter);
 
-    if let Some(d) = &filter.start_date {
-        q.push_str(" AND date(last_seen_at) >= date(?1)");
-        args.push(rusqlite::types::Value::Text(d.clone()));
-    }
-    if let Some(d) = &filter.end_date {
-        let ph = args.len() + 1;
-        q.push_str(&format!(" AND date(last_seen_at) <= date(?{ph})"));
-        args.push(rusqlite::types::Value::Text(d.clone()));
-    }
+    let mut extra = Vec::new();
     if let Some(p) = filter.project_id {
         let ph = args.len() + 1;
-        q.push_str(&format!(" AND project_id = ?{ph}"));
+        extra.push(format!("s.project_id = ?{ph}"));
         args.push(rusqlite::types::Value::Integer(p));
     }
-    if let Some(p) = &filter.provider {
-        let ph = args.len() + 1;
-        q.push_str(&format!(" AND provider = ?{ph}"));
-        args.push(rusqlite::types::Value::Text(p.clone()));
-    }
-    if let Some(m) = &filter.model {
-        let ph = args.len() + 1;
-        q.push_str(&format!(" AND model = ?{ph}"));
-        args.push(rusqlite::types::Value::Text(m.clone()));
-    }
 
-    q.push_str(" ORDER BY last_seen_at DESC");
+    let extra_sql = if extra.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {}", extra.join(" AND "))
+    };
+
+    let mut q = format!(
+        "SELECT s.id, s.source_session_id, s.source_id, s.project_id, s.title,
+                MIN(e.timestamp) AS started_at,
+                MAX(e.timestamp) AS last_seen_at,
+                COALESCE(MAX(e.provider), s.provider) AS provider,
+                COALESCE(MAX(e.model), s.model) AS model,
+                COALESCE(SUM(e.total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(e.cost_usd), 0.0) AS total_cost_usd,
+                s.exactness, s.raw_ref
+         FROM usage_events e
+         INNER JOIN sessions s ON s.id = e.session_id
+         {where_sql}{extra_sql}
+         GROUP BY s.id
+         ORDER BY last_seen_at DESC",
+    );
+
     if let Some(lim) = filter.limit {
         q.push_str(&format!(" LIMIT {lim}"));
     } else {
@@ -354,10 +430,18 @@ pub fn session_detail(session_id: i64) -> AppResult<Option<Session>> {
     db::with_conn(|conn| {
         let r = conn
             .query_row(
-                "SELECT id, source_session_id, source_id, project_id, title, started_at,
-                        last_seen_at, provider, model, total_tokens, total_cost_usd,
-                        exactness, raw_ref
-                 FROM sessions WHERE id = ?1",
+                "SELECT s.id, s.source_session_id, s.source_id, s.project_id, s.title,
+                        MIN(e.timestamp) AS started_at,
+                        MAX(e.timestamp) AS last_seen_at,
+                        COALESCE(MAX(e.provider), s.provider) AS provider,
+                        COALESCE(MAX(e.model), s.model) AS model,
+                        COALESCE(SUM(e.total_tokens), 0) AS total_tokens,
+                        COALESCE(SUM(e.cost_usd), 0.0) AS total_cost_usd,
+                        s.exactness, s.raw_ref
+                 FROM sessions s
+                 LEFT JOIN usage_events e ON e.session_id = s.id AND e.ignored = 0
+                 WHERE s.id = ?1
+                 GROUP BY s.id",
                 params![session_id],
                 |r| {
                     Ok(Session {
@@ -484,6 +568,23 @@ pub fn list_events(filter: &QueryFilter) -> AppResult<Vec<crate::types::UsageEve
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    })
+}
+
+pub fn rebuild_daily_usage() -> AppResult<()> {
+    db::with_conn_mut(|conn| {
+        conn.execute_batch(
+            "DELETE FROM daily_usage;
+             INSERT INTO daily_usage (date, provider, model, project_id, input_tokens, output_tokens,
+                reasoning_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost_usd, sessions_count)
+             SELECT date(timestamp), provider, model, project_id,
+                    SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens),
+                    SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(total_tokens), SUM(cost_usd),
+                    COUNT(DISTINCT session_id)
+             FROM usage_events WHERE ignored = 0
+             GROUP BY date(timestamp), provider, model, project_id;",
+        )?;
+        Ok(())
     })
 }
 

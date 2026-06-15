@@ -100,7 +100,19 @@ Per-(provider, model) pricing. Editable from Settings.
 ### `pricing_history`
 
 Append-only log of pricing changes. Populated on every `upsert_pricing` call
-that mutates an existing row.
+that mutates an existing row. The bulk `import_pricing_json` command goes
+through the same `upsert` path, so an AI-research import produces a history
+row per change — useful for audit and rollback.
+
+### Pricing research workflow
+
+The `model_pricing` table is the only thing standing between your usage
+events and a non-zero `cost_usd` value. Keeping it current is a manual job;
+the workflow described in [`pricing-research-preset.md`](pricing-research-preset.md)
+ships the missing-rows query (`list_missing_pricing`), the
+already-priced export (`export_pricing`), and a bulk import path
+(`import_pricing_json`) directly in the Tauri command surface. The
+Settings → Pricing tab in the UI exposes all three.
 
 ### `daily_usage`
 

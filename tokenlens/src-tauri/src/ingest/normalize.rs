@@ -16,9 +16,7 @@ pub fn detect_provider(model: &str) -> String {
         "anthropic".into()
     } else if m.starts_with("gemini-") || m.starts_with("palm-") {
         "google".into()
-    } else if m.contains("llama") || m.contains("qwen") || m.contains("mistral") || m.contains("phi-") {
-        "local".into()
-    } else if m.ends_with("-lm-studio") || m.contains("lm-studio") {
+    } else if m.ends_with("-lm-studio") || m.contains("lm-studio") || m.starts_with("local/") {
         "lmstudio".into()
     } else {
         "unknown".into()
@@ -184,6 +182,12 @@ pub fn normalize(raw: &Value) -> Option<UsageEvent> {
             with_sid.insert("__session_id".to_string(), Value::String(sid));
             ev.raw_json = Some(serde_json::to_string(&with_sid).unwrap_or_default());
         }
+    } else if let Some(info) = raw.get("info") {
+        if let Some(sid) = str_from(info, &["sessionID", "session_id", "sessionId", "conversation_id"]) {
+            let mut with_sid = raw.as_object().cloned().unwrap_or_default();
+            with_sid.insert("__session_id".to_string(), Value::String(sid));
+            ev.raw_json = Some(serde_json::to_string(&Value::Object(with_sid)).unwrap_or_default());
+        }
     }
     if let Some(role) = str_from(raw, &["role", "messageRole", "message_role"]) {
         ev.message_role = Some(role);
@@ -209,16 +213,25 @@ pub fn normalize(raw: &Value) -> Option<UsageEvent> {
 
     let input = if top_input > 0 { top_input } else if nested_input > 0 { nested_input } else { deep_input };
     let output = if top_output > 0 { top_output } else if nested_output > 0 { nested_output } else { deep_output };
-    let total = if top_total > 0 { top_total } else if nested_total > 0 { nested_total } else if deep_total > 0 { deep_total } else { input + output };
+
+    // Reasoning (computed before total so fallback can include it)
+    let reasoning = int_from_nested(raw, &["info", "usage", "tokens", "message", "output_tokens_details", "completion_tokens_details"],
+        &["reasoning_tokens", "reasoningTokens"])
+        .max(int_from(raw, &["reasoning_tokens", "reasoningTokens"]));
+
+    let total = if top_total > 0 {
+        top_total
+    } else if nested_total > 0 {
+        nested_total
+    } else if deep_total > 0 {
+        deep_total
+    } else {
+        input + output + reasoning
+    };
 
     ev.input_tokens = input;
     ev.output_tokens = output;
     ev.total_tokens = total;
-
-    // Reasoning
-    let reasoning = int_from_nested(raw, &["info", "usage", "tokens", "message", "output_tokens_details", "completion_tokens_details"],
-        &["reasoning_tokens", "reasoningTokens"])
-        .max(int_from(raw, &["reasoning_tokens", "reasoningTokens"]));
     ev.reasoning_tokens = reasoning;
 
     // Cache

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useFilter } from "@/stores/filter";
+import { useFilterObject } from "@/stores/filter";
 import { getBreakdown, getOverviewStats, getUsageTimeseries } from "@/lib/tauri";
 import type { Breakdown, OverviewStats, TimeseriesPoint } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -7,10 +7,10 @@ import { Card, CardContent, CardHeader, CardTitle, Skeleton, Tabs, TabsList, Tab
 import { CostLineChart } from "@/charts";
 import { formatNumber, formatUsd } from "@/lib/utils";
 import { EmptyState } from "@/components/layout/PageHeader";
-import { TrendingUp, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { TrendingUp, AlertTriangle } from "lucide-react";
 
 export function Costs() {
-  const filter = useFilter((s) => s.toFilter());
+  const filter = useFilterObject();
   const [byProvider, setByProvider] = useState<Breakdown[] | null>(null);
   const [byModel, setByModel] = useState<Breakdown[] | null>(null);
   const [series, setSeries] = useState<TimeseriesPoint[]>([]);
@@ -42,7 +42,6 @@ export function Costs() {
     const sumXX = xs.reduce((a, b) => a + b * b, 0);
     const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
     const intercept = (sumY - slope * sumX) / n;
-    // Project 30 days out from last point
     const lastX = xs[xs.length - 1];
     const daysToProject = 30 - (series.length - last14.length);
     forecast = Math.max(0, slope * (lastX + daysToProject) + intercept);

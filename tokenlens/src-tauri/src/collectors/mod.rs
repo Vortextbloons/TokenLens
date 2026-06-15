@@ -1,6 +1,6 @@
-//! JSONL inbox collector. Watches the app's local inbox directory for
-//! new `.jsonl` files written by the OpenCode plugin (or any external
-//! tool that follows the same minimal event format). Imports and archives.
+//! Collectors: JSONL inbox and OpenCode SQLite import.
+
+pub mod opencode_db;
 
 use crate::ingest;
 use crate::types::SourceKind;
@@ -89,7 +89,8 @@ pub fn start_periodic_inbox_scanner(interval: Duration) {
         let mut tick = tokio::time::interval(interval);
         loop {
             tick.tick().await;
-            if let Err(e) = scan_inbox() {
+            let result = crate::scan::run_exclusive_blocking(scan_inbox).await;
+            if let Err(e) = result {
                 tracing::warn!("Periodic inbox scan failed: {}", e);
             }
         }

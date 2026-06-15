@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
-import { useFilter } from "@/stores/filter";
+import { useFilterObject } from "@/stores/filter";
 import { listEvents, listPricing } from "@/lib/tauri";
 import type { UsageEvent, ModelPricing } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle, Skeleton, Badge, Input, Select } from "@/components/ui/primitives";
-import { Search, Copy, Trash2, Check } from "lucide-react";
+import { Search, Copy, Check } from "lucide-react";
 import { formatDate, formatNumber, formatUsd, exactnessColor } from "@/lib/utils";
 import { EmptyState } from "@/components/layout/PageHeader";
 
 export function RawEvents() {
-  const filter = useFilter((s) => s.toFilter());
+  const filter = useFilterObject();
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");

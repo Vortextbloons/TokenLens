@@ -1,11 +1,11 @@
-import { Sun, Moon, Monitor, Sparkles, Database, RefreshCw } from "lucide-react";
+import { Sun, Moon, Monitor, Sparkles, Database, RefreshCw, Trash2, RotateCcw } from "lucide-react";
 import { useTheme } from "@/stores/theme";
 import { useFilter } from "@/stores/filter";
 import { Button } from "@/components/ui/primitives";
 import { Select } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { toast } from "@/stores/toast";
-import { generateSampleData, isTauri, recalculateCosts } from "@/lib/tauri";
+import { generateSampleData, purgeSampleData, resetAllData, isTauri, recalculateCosts, confirmDialog } from "@/lib/tauri";
 
 export function Topbar() {
   const { theme, setTheme } = useTheme();
@@ -17,6 +17,46 @@ export function Topbar() {
       toast({ title: `Generated ${n} sample events`, variant: "success" });
     } catch (e: any) {
       toast({ title: "Failed to generate samples", description: String(e), variant: "destructive" });
+    }
+  };
+
+  const onPurgeSamples = async () => {
+    try {
+      const n = await purgeSampleData();
+      toast({
+        title: n > 0 ? `Removed ${n} sample events` : "No sample data to remove",
+        variant: "success",
+      });
+    } catch (e: any) {
+      toast({ title: "Failed to remove sample data", description: String(e), variant: "destructive" });
+    }
+  };
+
+  const onResetAll = async () => {
+    const ok = await confirmDialog(
+      "Reset TokenLens?\n\n" +
+      "This will permanently delete:\n" +
+      "  - all usage events, sessions, daily aggregates, alerts\n" +
+      "  - all configured sources and file offsets\n" +
+      "  - all settings (budgets, preferences)\n" +
+      "  - all projects and pricing history\n\n" +
+      "Model pricing reference data is kept. This cannot be undone.",
+      { title: "Reset all data", kind: "warning" }
+    );
+    if (!ok) return;
+    try {
+      const s = await resetAllData();
+      const total = s.events + s.sessions + s.daily_usage + s.alerts +
+                    s.file_offsets + s.inbox_files + s.projects +
+                    s.pricing_history + s.sources + s.settings;
+      toast({
+        title: total > 0 ? `Reset complete (${total} rows cleared)` : "Nothing to reset",
+        description:
+          `${s.events} events, ${s.sessions} sessions, ${s.sources} sources, ${s.settings} settings`,
+        variant: "destructive",
+      });
+    } catch (e: any) {
+      toast({ title: "Reset failed", description: String(e), variant: "destructive" });
     }
   };
 
@@ -60,6 +100,12 @@ export function Topbar() {
         <Button variant="outline" size="sm" onClick={onGenerateSamples}>
           <Sparkles className="h-3.5 w-3.5" />
           Samples
+        </Button>
+        <Button variant="ghost" size="icon" onClick={onPurgeSamples} title="Remove sample data">
+          <Trash2 className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={onResetAll} title="Reset all data" className="text-destructive hover:text-destructive">
+          <RotateCcw className="h-4 w-4" />
         </Button>
         <div className="flex items-center gap-0.5 ml-1 p-0.5 rounded-md border bg-card">
           {[

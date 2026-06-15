@@ -213,6 +213,9 @@ pub struct OverviewStats {
     pub reasoning_token_pct: f64,
     pub cache_savings_usd: f64,
     pub sessions_count: i64,
+    /// Events in the selected period with no pricing row (cloud models).
+    pub unpriced_events: i64,
+    pub unpriced_tokens: i64,
     pub exactness_mix: ExactnessMix,
 }
 

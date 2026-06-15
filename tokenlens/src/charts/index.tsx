@@ -104,17 +104,15 @@ export function ProviderDonut({ data }: { data: Breakdown[] }) {
   const total = top.reduce((a, b) => a + b.total_tokens, 0);
   return (
     <div className="flex items-center gap-4">
-      <ResponsiveContainer width={160} height={160}>
-        <PieChart>
-          <Pie data={top} dataKey="total_tokens" nameKey="key" innerRadius={50} outerRadius={75} paddingAngle={2}>
-            {top.map((_, i) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
-          </Pie>
-          <Tooltip
-            contentStyle={{ backgroundColor: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
-            formatter={(v: any) => formatNumber(Number(v))}
-          />
-        </PieChart>
-      </ResponsiveContainer>
+      <PieChart width={160} height={160}>
+        <Pie data={top} dataKey="total_tokens" nameKey="key" innerRadius={50} outerRadius={75} paddingAngle={2}>
+          {top.map((_, i) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
+        </Pie>
+        <Tooltip
+          contentStyle={{ backgroundColor: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+          formatter={(v: any) => formatNumber(Number(v))}
+        />
+      </PieChart>
       <div className="flex-1 min-w-0 space-y-1.5">
         {top.map((d, i) => (
           <div key={d.key} className="flex items-center gap-2 text-xs">

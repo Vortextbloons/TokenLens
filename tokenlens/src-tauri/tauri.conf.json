@@ -44,18 +44,7 @@
   },
   "plugins": {
     "fs": {
-      "scope": {
-        "allow": [
-          "$HOME/**",
-          "$APPDATA/**",
-          "$APPLOCALDATA/**",
-          "$DOCUMENT/**",
-          "$DOWNLOAD/**",
-          "$DESKTOP/**"
-        ]
-      }
-    },
-    "store": {},
-    "autostart": {}
+      "requireLiteralLeadingDot": false
+    }
   }
 }

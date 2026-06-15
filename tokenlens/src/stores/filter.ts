@@ -1,6 +1,7 @@
 // Global app stores: filter range, etc.
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { useMemo } from "react";
 import { rangeToDates } from "@/lib/utils";
 import type { QueryFilter } from "@/types/contracts";
 
@@ -11,29 +12,45 @@ interface FilterState {
   setRange: (r: string) => void;
   setProvider: (p: string | null) => void;
   setModel: (m: string | null) => void;
-  toFilter: () => QueryFilter;
 }
 
 export const useFilter = create<FilterState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       range: "7d",
       provider: null,
       model: null,
       setRange: (r) => set({ range: r }),
       setProvider: (p) => set({ provider: p }),
       setModel: (m) => set({ model: m }),
-      toFilter: () => {
-        const s = get();
-        const { start, end } = rangeToDates(s.range);
-        return {
-          start_date: start,
-          end_date: end,
-          provider: s.provider,
-          model: s.model,
-        };
-      },
     }),
     { name: "tokenlens-filter" }
   )
 );
+
+/**
+ * Build a stable QueryFilter object from the current store state.
+ *
+ * IMPORTANT: this hook uses three independent primitive selectors (range,
+ * provider, model) instead of selecting the whole object at once. That way
+ * Zustand's reference equality is checked against primitives, which never
+ * triggers spurious re-renders. The resulting QueryFilter is then memoized
+ * so the object identity is stable across renders — safe to use as a
+ * useEffect dependency.
+ */
+export function useFilterObject(): QueryFilter {
+  const range = useFilter((s) => s.range);
+  const provider = useFilter((s) => s.provider);
+  const model = useFilter((s) => s.model);
+
+  return useMemo(() => {
+    const { start, end } = rangeToDates(range);
+    const filter: QueryFilter = {
+      start_date: start,
+      end_date: end,
+      provider,
+      model,
+    };
+    return filter;
+  }, [range, provider, model]);
+}

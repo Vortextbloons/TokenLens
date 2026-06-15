@@ -95,7 +95,11 @@ pub async fn remove_source(id: i64) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn scan_source(id: i64) -> AppResult<ScanResult> {
+pub async fn scan_source(id: i64) -> AppResult<ScanResult> {
+    crate::scan::run_exclusive_blocking(move || scan_source_sync(id)).await
+}
+
+fn scan_source_sync(id: i64) -> AppResult<ScanResult> {
     let path = db::with_conn(|conn| {
         let p: Option<String> = conn.query_row(
             "SELECT path FROM sources WHERE id = ?1",
@@ -117,6 +121,10 @@ pub fn scan_source(id: i64) -> AppResult<ScanResult> {
     let kind_parsed: crate::types::SourceKind = kind
         .parse()
         .map_err(|()| AppError::Invalid(format!("unknown source kind: {kind}")))?;
+    // Reuse existing source row id when scanning a registered path.
+    if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("db") {
+        return crate::collectors::opencode_db::scan_db(&p, id);
+    }
     ingest::scan_source_kind(kind_parsed, &p)
 }
 
@@ -147,14 +155,38 @@ pub async fn list_watchers() -> AppResult<Vec<(i64, String)>> {
 }
 
 #[tauri::command]
-pub fn scan_inbox() -> AppResult<ScanResult> {
-    collectors::scan_inbox()
+pub async fn scan_inbox() -> AppResult<ScanResult> {
+    crate::scan::run_exclusive_blocking(collectors::scan_inbox).await
 }
 
 #[tauri::command]
 pub fn discover_default_sources() -> AppResult<Vec<Source>> {
-    let paths = ingest::default_opencode_log_paths();
     let mut created = Vec::new();
+    // Prefer OpenCode SQLite DB (actual token usage lives here).
+    for p in ingest::default_opencode_db_paths().iter().filter(|p| p.exists()) {
+        let name = format!("OpenCode DB: {}", p.display());
+        let id = db::upsert_source(&name, crate::types::SourceKind::OpencodeLogs, p.to_str())?;
+        let src = db::with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT id, name, kind, path, enabled, last_scanned_at, last_error, created_at FROM sources WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok(Source {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        kind: r.get(2)?,
+                        path: r.get(3)?,
+                        enabled: r.get::<_, i64>(4)? != 0,
+                        last_scanned_at: r.get(5)?,
+                        last_error: r.get(6)?,
+                        created_at: r.get(7)?,
+                    })
+                },
+            )?)
+        })?;
+        created.push(src);
+    }
+    let paths = ingest::default_opencode_log_paths();
     for p in paths.iter().filter(|p| p.exists()) {
         let name = format!("OpenCode: {}", p.display());
         let id = db::upsert_source(&name, crate::types::SourceKind::OpencodeLogs, p.to_str())?;
@@ -241,8 +273,37 @@ pub fn delete_pricing(provider: String, model: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn recalculate_costs() -> AppResult<i64> {
-    pricing::recalculate_all()
+pub async fn recalculate_costs() -> AppResult<i64> {
+    crate::scan::run_exclusive_blocking(pricing::recalculate_all).await
+}
+
+/// Bulk import a list of pricing rows produced by an external AI research
+/// workflow (see `docs/pricing-research-preset.md`).
+///
+/// Each row goes through `pricing::upsert` so the existing pricing_history
+/// audit log is preserved. Empty / blank rows are skipped. After import the
+/// caller is expected to run `recalculate_costs` to refresh event costs.
+#[tauri::command]
+pub fn import_pricing_json(rows: Vec<ModelPricing>) -> AppResult<pricing::BulkImportSummary> {
+    pricing::bulk_upsert(&rows)
+}
+
+/// Export the full `model_pricing` table as a JSON array. Used by the pricing
+/// research workflow so the AI can see what's already configured and avoid
+/// suggesting duplicates.
+#[tauri::command]
+pub fn export_pricing() -> AppResult<Vec<ModelPricing>> {
+    pricing::list_all()
+}
+
+/// List `(provider, model)` pairs that appear in `usage_events` but have no
+/// matching row in `model_pricing`. Sorted by total tokens (impact) desc.
+///
+/// This is the headless equivalent of running the "missing pricing" SQL
+/// query in the docs; the UI calls it instead of shelling out to sqlite3.
+#[tauri::command]
+pub fn list_missing_pricing() -> AppResult<Vec<pricing::MissingPricingRow>> {
+    pricing::list_missing()
 }
 
 // ----------------- Cleanup -----------------
@@ -251,7 +312,7 @@ pub fn recalculate_costs() -> AppResult<i64> {
 pub fn cleanup_raw_events(days: i64) -> AppResult<i64> {
     db::with_conn_mut(|conn| {
         let n = conn.execute(
-            "DELETE FROM usage_events WHERE created_at < datetime('now', ?1)",
+            "DELETE FROM usage_events WHERE date(timestamp) < date('now', ?1)",
             params![format!("-{days} days")],
         )?;
         Ok(n as i64)
@@ -259,41 +320,71 @@ pub fn cleanup_raw_events(days: i64) -> AppResult<i64> {
 }
 
 #[tauri::command]
-pub fn vacuum_db() -> AppResult<()> {
-    db::with_conn(|conn| {
-        conn.execute_batch("VACUUM;")?;
-        Ok(())
+pub async fn vacuum_db() -> AppResult<()> {
+    crate::scan::run_exclusive_blocking(|| {
+        db::with_conn(|conn| {
+            conn.execute_batch("VACUUM;")?;
+            Ok(())
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn rebuild_daily_aggregates() -> AppResult<()> {
-    db::with_conn_mut(|conn| {
-        conn.execute_batch(
-            "DELETE FROM daily_usage;
-             INSERT INTO daily_usage (date, provider, model, project_id, input_tokens, output_tokens,
-                reasoning_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost_usd, sessions_count)
-             SELECT date(timestamp), provider, model, project_id,
-                    SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens),
-                    SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(total_tokens), SUM(cost_usd),
-                    COUNT(DISTINCT session_id)
-             FROM usage_events WHERE ignored = 0
-             GROUP BY date(timestamp), provider, model, project_id;",
-        )?;
-        Ok(())
-    })
+pub async fn rebuild_daily_aggregates() -> AppResult<()> {
+    crate::scan::run_exclusive_blocking(crate::aggregation::rebuild_daily_usage).await
 }
 
 #[tauri::command]
-pub fn reset_all_data() -> AppResult<()> {
+pub fn reset_all_data() -> AppResult<ResetSummary> {
+    // Stop all filesystem watchers first so they don't race the delete.
+    let active = tauri::async_runtime::block_on(crate::watcher::list_active());
+    for (id, _) in active {
+        let _ = tauri::async_runtime::block_on(crate::watcher::stop(id));
+    }
+
     db::with_conn_mut(|conn| {
-        conn.execute_batch(
-            "DELETE FROM usage_events; DELETE FROM sessions; DELETE FROM daily_usage;
-             DELETE FROM alerts; DELETE FROM file_offsets; DELETE FROM inbox_files;
-             DELETE FROM projects; DELETE FROM pricing_history;",
-        )?;
-        Ok(())
+        let mut summary = ResetSummary::default();
+
+        summary.events =
+            conn.execute("DELETE FROM usage_events", [])? as i64;
+        summary.sessions =
+            conn.execute("DELETE FROM sessions", [])? as i64;
+        summary.daily_usage =
+            conn.execute("DELETE FROM daily_usage", [])? as i64;
+        summary.alerts =
+            conn.execute("DELETE FROM alerts", [])? as i64;
+        summary.file_offsets =
+            conn.execute("DELETE FROM file_offsets", [])? as i64;
+        summary.inbox_files =
+            conn.execute("DELETE FROM inbox_files", [])? as i64;
+        summary.projects =
+            conn.execute("DELETE FROM projects", [])? as i64;
+        summary.pricing_history =
+            conn.execute("DELETE FROM pricing_history", [])? as i64;
+        summary.sources =
+            conn.execute("DELETE FROM sources", [])? as i64;
+        summary.settings =
+            conn.execute("DELETE FROM settings", [])? as i64;
+        // Note: model_pricing is intentionally preserved — it's your reference
+        // data, not user content.
+
+        Ok(summary)
     })
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ResetSummary {
+    pub events: i64,
+    pub sessions: i64,
+    pub daily_usage: i64,
+    pub alerts: i64,
+    pub file_offsets: i64,
+    pub inbox_files: i64,
+    pub projects: i64,
+    pub pricing_history: i64,
+    pub sources: i64,
+    pub settings: i64,
 }
 
 #[tauri::command]
@@ -393,7 +484,11 @@ pub fn backup_db(out_path: String) -> AppResult<()> {
 // ----------------- Sample data -----------------
 
 #[tauri::command]
-pub fn generate_sample_data() -> AppResult<i64> {
+pub async fn generate_sample_data() -> AppResult<i64> {
+    crate::scan::run_exclusive_blocking(generate_sample_data_sync).await
+}
+
+fn generate_sample_data_sync() -> AppResult<i64> {
     use crate::types::Exactness;
     use crate::ingest::dedup;
     use chrono::Duration;
@@ -464,6 +559,24 @@ pub fn generate_sample_data() -> AppResult<i64> {
         }
     }
 
+    for ev in &mut events {
+        let (provider, model) = (
+            ev.provider.clone().unwrap_or_default(),
+            ev.model.clone().unwrap_or_default(),
+        );
+        if !provider.is_empty() && !model.is_empty() {
+            ev.cost_usd = crate::pricing::compute_cost(
+                &provider,
+                &model,
+                ev.input_tokens,
+                ev.output_tokens,
+                ev.reasoning_tokens,
+                ev.cache_read_tokens,
+                ev.cache_write_tokens,
+            );
+        }
+    }
+
     // Create a source row for samples
     let source_id = db::upsert_source(
         "Sample Data (built-in)",
@@ -473,4 +586,97 @@ pub fn generate_sample_data() -> AppResult<i64> {
 
     let inserted = crate::ingest::persist_events(&events, source_id)?;
     Ok(inserted)
+}
+
+/// Remove all sample data previously generated by `generate_sample_data`.
+///
+/// Sample events live under a synthetic source named "Sample Data (built-in)".
+/// We delete every event (and the source row itself) tied to that source.
+/// `usage_events.source_id` is `ON DELETE SET NULL`, so we must clear events
+/// explicitly — otherwise they'd survive as orphan rows and still show up in
+/// analytics.
+#[tauri::command]
+pub fn purge_sample_data() -> AppResult<i64> {
+    const SAMPLE_SOURCE_NAME: &str = "Sample Data (built-in)";
+    const SAMPLE_SOURCE_PATH: &str = "<built-in>";
+
+    db::with_conn_mut(|conn| {
+        // Collect ids of the built-in sample source(s).
+        let mut stmt = conn.prepare(
+            "SELECT id FROM sources
+             WHERE name = ?1 OR (path = ?2 AND kind = 'manual')",
+        )?;
+        let source_ids: Vec<i64> = stmt
+            .query_map(params![SAMPLE_SOURCE_NAME, SAMPLE_SOURCE_PATH], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        if source_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let total_events_deleted = delete_events_for_sources(conn, &source_ids)?;
+        delete_sessions_for_sources(conn, &source_ids);
+        delete_file_offsets_for_sources(conn, &source_ids);
+
+        // Clean up the synthetic source rows.
+        for id in &source_ids {
+            conn.execute("DELETE FROM sources WHERE id = ?1", params![id])?;
+        }
+
+        Ok(total_events_deleted)
+    })
+}
+
+fn delete_events_for_sources(
+    conn: &rusqlite::Connection,
+    source_ids: &[i64],
+) -> AppResult<i64> {
+    let placeholders = std::iter::repeat("?")
+        .take(source_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM usage_events WHERE source_id IN ({})",
+        placeholders
+    );
+    let params: Vec<&dyn rusqlite::ToSql> =
+        source_ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+    let n = conn.execute(&sql, params.as_slice())?;
+    Ok(n as i64)
+}
+
+fn delete_sessions_for_sources(
+    conn: &rusqlite::Connection,
+    source_ids: &[i64],
+) {
+    let placeholders = std::iter::repeat("?")
+        .take(source_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM sessions WHERE source_id IN ({})",
+        placeholders
+    );
+    let params: Vec<&dyn rusqlite::ToSql> =
+        source_ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+    let _ = conn.execute(&sql, params.as_slice());
+}
+
+fn delete_file_offsets_for_sources(
+    conn: &rusqlite::Connection,
+    source_ids: &[i64],
+) {
+    let placeholders = std::iter::repeat("?")
+        .take(source_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM file_offsets WHERE source_id IN ({})",
+        placeholders
+    );
+    let params: Vec<&dyn rusqlite::ToSql> =
+        source_ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+    let _ = conn.execute(&sql, params.as_slice());
 }

@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { useFilter } from "@/stores/filter";
+import { useFilterObject } from "@/stores/filter";
 import { getUsageTimeseries, listEvents } from "@/lib/tauri";
 import type { TimeseriesPoint, UsageEvent } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle, Skeleton } from "@/components/ui/primitives";
 import { TokensAreaChart, CostLineChart } from "@/charts";
-import { formatNumber, formatUsd } from "@/lib/utils";
+import { formatNumber } from "@/lib/utils";
 import { EmptyState } from "@/components/layout/PageHeader";
 
 export function Timeline() {
-  const filter = useFilter((s) => s.toFilter());
+  const filter = useFilterObject();
   const [series, setSeries] = useState<TimeseriesPoint[]>([]);
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [loading, setLoading] = useState(true);

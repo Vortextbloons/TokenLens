@@ -93,7 +93,7 @@ UI. The Rust backend is the source of truth for the database, parsing, and aggre
 | Failure | Behavior |
 | --- | --- |
 | OpenCode log format changes | Normalizer falls back to deep key search; unparseable lines are skipped silently. Raw JSON is preserved so re-parse is possible later. |
-| Missing pricing for a model | Cost is recorded as 0. UI shows "(no price)" warning in Settings. |
+| Missing pricing for a model | Cost is recorded as 0. UI shows "(no price)" warning in Settings. The **Pricing research workflow** card on the Pricing tab exposes `list_missing_pricing`, `export_pricing`, and `import_pricing_json` so missing rows can be researched externally and bulk-imported. See [`docs/pricing-research-preset.md`](pricing-research-preset.md). |
 | Watcher misses a write | File offsets are stored per-source-per-file. A re-scan picks up missed bytes. |
 | DB corruption | Recovery via `vacuum_db` (best effort) or `reset_all_data` (nuclear). |
 | Disk full | Writes fail with `Io` error; UI surfaces it via toast. |

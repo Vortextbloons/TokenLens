@@ -17,6 +17,7 @@ pub fn hash_event(
     input_tokens: i64,
     output_tokens: i64,
 ) -> String {
+    let event_type = normalize_event_type(event_type);
     let mut h = Sha256::new();
     h.update(timestamp_iso.as_bytes());
     h.update(b"|");
@@ -34,6 +35,14 @@ pub fn hash_event(
     h.update(b"|");
     h.update(output_tokens.to_le_bytes());
     hex::encode(h.finalize())
+}
+
+/// Canonical event-type strings so DB + log ingest dedupe the same step.
+pub fn normalize_event_type(event_type: &str) -> &str {
+    match event_type {
+        "step-finish" | "step.finish" => "step.finish",
+        _ => event_type,
+    }
 }
 
 mod hex {
@@ -57,6 +66,13 @@ mod tests {
     fn same_inputs_same_hash() {
         let h1 = hash_event("2025-01-01T00:00:00Z", "openai", "gpt-4o", "s1", "message", 100, 50, 50);
         let h2 = hash_event("2025-01-01T00:00:00Z", "openai", "gpt-4o", "s1", "message", 100, 50, 50);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn step_finish_aliases_collide() {
+        let h1 = hash_event("2025-01-01T00:00:00Z", "openai", "gpt-4o", "s1", "step-finish", 100, 50, 50);
+        let h2 = hash_event("2025-01-01T00:00:00Z", "openai", "gpt-4o", "s1", "step.finish", 100, 50, 50);
         assert_eq!(h1, h2);
     }
 

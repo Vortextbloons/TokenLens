@@ -9,6 +9,7 @@ pub mod errors;
 pub mod ingest;
 pub mod pricing;
 pub mod redaction;
+pub mod scan;
 pub mod settings;
 pub mod token_estimator;
 pub mod types;
@@ -68,7 +69,7 @@ pub fn db_path() -> PathBuf {
 
 /// Build and run the Tauri app.
 pub fn run() {
-    // 1. Logging
+    // 1. Logging (settings may fall back to defaults until DB is ready)
     let s = settings::load_all().unwrap_or_else(|_| settings::AppSettings::defaults());
     let _guard = init_logging(s.debug_logging);
 
@@ -130,6 +131,9 @@ pub fn run() {
             commands::list_pricing,
             commands::upsert_pricing,
             commands::delete_pricing,
+            commands::import_pricing_json,
+            commands::export_pricing,
+            commands::list_missing_pricing,
             commands::recalculate_costs,
             commands::cleanup_raw_events,
             commands::vacuum_db,
@@ -140,6 +144,7 @@ pub fn run() {
             commands::export_json,
             commands::backup_db,
             commands::generate_sample_data,
+            commands::purge_sample_data,
             commands::scan_inbox,
             alerts::list_alerts,
             alerts::acknowledge_alert,

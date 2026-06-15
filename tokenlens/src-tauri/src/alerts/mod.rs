@@ -5,6 +5,7 @@
 use crate::db;
 use crate::errors::AppResult;
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 const ALERT_TYPES: &[&str] = &["daily_tokens", "monthly_cost"];
 
@@ -67,15 +68,16 @@ pub fn evaluate_budgets() -> AppResult<Vec<i64>> {
 }
 
 fn read_setting(key: &str) -> Option<String> {
-    let r: Result<Option<String>, _> = db::with_conn(|conn| {
-        conn.query_row(
+    db::with_conn(|conn| {
+        Ok(conn.query_row(
             "SELECT value FROM settings WHERE key = ?1",
             params![key],
             |r| r.get::<_, String>(0),
         )
-        .optional()
-    });
-    r.ok().flatten()
+        .optional()?)
+    })
+    .ok()
+    .flatten()
 }
 
 fn alert_exists(kind: &str, pct: i64) -> AppResult<bool> {

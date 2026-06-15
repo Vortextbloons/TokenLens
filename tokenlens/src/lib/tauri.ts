@@ -74,13 +74,52 @@ export const deletePricing = (provider: string, model: string) =>
   invoke<void>("delete_pricing", { provider, model });
 export const recalculateCosts = () => invoke<number>("recalculate_costs");
 
+// Pricing research workflow — see docs/pricing-research-preset.md.
+// `importPricingJson` accepts a JSON array of ModelPricing rows (the shape
+// the AI preset produces). Each row goes through the same upsert path used
+// by manual edits, so pricing_history is recorded and a "ai-research:<url>"
+// source can be traced back to the URL the AI used.
+export interface BulkImportSummary {
+  received: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+}
+export const importPricingJson = (rows: ModelPricing[]) =>
+  invoke<BulkImportSummary>("import_pricing_json", { rows });
+export const exportPricing = () => invoke<ModelPricing[]>("export_pricing");
+
+// `MissingPricingRow` mirrors the Rust type in pricing::MissingPricingRow.
+export interface MissingPricingRow {
+  provider: string;
+  model: string;
+  events: number;
+  total_tokens: number;
+  current_cost_usd: number;
+}
+export const listMissingPricing = () => invoke<MissingPricingRow[]>("list_missing_pricing");
+
 // ----------------- Cleanup -----------------
 
 export const cleanupRawEvents = (days: number) =>
   invoke<number>("cleanup_raw_events", { days });
 export const vacuumDb = () => invoke<void>("vacuum_db");
 export const rebuildDailyAggregates = () => invoke<void>("rebuild_daily_aggregates");
-export const resetAllData = () => invoke<void>("reset_all_data");
+export interface ResetSummary {
+  events: number;
+  sessions: number;
+  daily_usage: number;
+  alerts: number;
+  file_offsets: number;
+  inbox_files: number;
+  projects: number;
+  pricing_history: number;
+  sources: number;
+  settings: number;
+}
+
+export const resetAllData = () => invoke<ResetSummary>("reset_all_data");
 export const dbSizeMb = () => invoke<number>("db_size_mb");
 
 // ----------------- Exports -----------------
@@ -94,6 +133,7 @@ export const backupDb = (outPath: string) => invoke<void>("backup_db", { outPath
 // ----------------- Sample data -----------------
 
 export const generateSampleData = () => invoke<number>("generate_sample_data");
+export const purgeSampleData = () => invoke<number>("purge_sample_data");
 
 // ----------------- Alerts -----------------
 
@@ -104,3 +144,32 @@ export const evaluateBudgets = () => invoke<number>("evaluate_budgets_command");
 // ----------------- Utility -----------------
 
 export const isTauri = inTauri;
+
+/**
+ * Show a confirm dialog that works in both Tauri and browser (dev) mode.
+ * In Tauri this routes to the native dialog plugin (requires
+ * `dialog:allow-ask` / `dialog:allow-confirm` in the capability). In a plain
+ * browser it falls back to `window.confirm`. The string is rendered as
+ * plain text — no markdown in either path.
+ */
+export async function confirmDialog(
+  message: string,
+  opts: { title?: string; kind?: "info" | "warning" | "error" } = {}
+): Promise<boolean> {
+  if (inTauri) {
+    const { ask, confirm } = await import("@tauri-apps/plugin-dialog");
+    try {
+      return await ask(message, {
+        title: opts.title ?? "Confirm",
+        kind: opts.kind ?? "warning",
+      });
+    } catch {
+      // Fall back to the simpler `confirm` if `ask` is unavailable.
+      return await confirm(message, {
+        title: opts.title ?? "Confirm",
+        kind: opts.kind ?? "warning",
+      });
+    }
+  }
+  return window.confirm(message);
+}

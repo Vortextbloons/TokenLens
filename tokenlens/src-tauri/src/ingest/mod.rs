@@ -11,15 +11,33 @@ use crate::db;
 use crate::errors::{AppError, AppResult};
 use crate::pricing;
 use crate::redaction;
+use crate::scan::{self, PERSIST_BATCH_SIZE};
 use crate::settings;
 use crate::types::{ScanResult, SourceKind, UsageEvent};
 use chrono::Utc;
+use rayon::prelude::*;
 use rusqlite::params;
 use serde_json::Value;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::{debug, warn};
 use walkdir::WalkDir;
+
+const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024;
+const JSONL_BUF_CAPACITY: usize = 256 * 1024;
+/// Skip walking extremely deep trees during directory scans.
+const MAX_SCAN_DEPTH: usize = 8;
+/// Cap files per scan to avoid runaway imports on huge trees.
+/// Cap files per scan to avoid runaway imports on huge trees.
+const MAX_FILES_PER_SCAN: usize = 10_000;
+/// Process this many files in parallel before flushing to SQLite.
+const PARALLEL_FILE_CHUNK: usize = 64;
+
+struct ScanSettings {
+    redact: bool,
+    store_raw: bool,
+}
 
 /// Parse a single file (JSONL, JSON array, or "log" with embedded JSON).
 /// Returns a list of normalized events that are not duplicates of each other.
@@ -33,22 +51,29 @@ pub fn parse_file(path: &Path) -> AppResult<Vec<UsageEvent>> {
     }
     let size = metadata.len();
 
-    // Cap file size: 500 MB default.
-    const MAX_SIZE: u64 = 500 * 1024 * 1024;
-    if size > MAX_SIZE {
+    if size > MAX_FILE_SIZE {
         warn!(
             "Skipping {}: too large ({} bytes > {} max)",
             path.display(),
             size,
-            MAX_SIZE
+            MAX_FILE_SIZE
         );
         return Ok(vec![]);
     }
 
+    // Small files: read whole buffer once (faster for tiny JSON arrays).
+    if size <= JSONL_BUF_CAPACITY as u64 {
+        return parse_file_in_memory(path, size);
+    }
+
+    // Large files: stream JSONL line-by-line to avoid loading hundreds of MB.
+    parse_file_streaming(path)
+}
+
+fn parse_file_in_memory(path: &Path, size: u64) -> AppResult<Vec<UsageEvent>> {
     let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
-            // Probably binary, skip quietly
             debug!("Skipping non-text file {}: {}", path.display(), e);
             return Ok(vec![]);
         }
@@ -57,7 +82,6 @@ pub fn parse_file(path: &Path) -> AppResult<Vec<UsageEvent>> {
     let mut out = Vec::new();
     let mut seen_hashes = std::collections::HashSet::new();
 
-    // Try JSON array first
     if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&raw) {
         for v in arr {
             push_event(&mut out, &mut seen_hashes, v, path);
@@ -65,21 +89,48 @@ pub fn parse_file(path: &Path) -> AppResult<Vec<UsageEvent>> {
         return Ok(out);
     }
 
-    // JSONL
-    for (lineno, line) in raw.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+    for line in raw.lines() {
+        parse_jsonl_line(line, path, &mut out, &mut seen_hashes);
+    }
+    let _ = size;
+    Ok(out)
+}
+
+fn parse_file_streaming(path: &Path) -> AppResult<Vec<UsageEvent>> {
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            debug!("Skipping unreadable file {}: {}", path.display(), e);
+            return Ok(vec![]);
         }
-        match serde_json::from_str::<Value>(line) {
-            Ok(v) => push_event(&mut out, &mut seen_hashes, v, path),
-            Err(_) => {
-                // Some log lines are not JSON; skip silently.
-                let _ = lineno;
-            }
-        }
+    };
+    let reader = BufReader::with_capacity(JSONL_BUF_CAPACITY, file);
+    let mut out = Vec::new();
+    let mut seen_hashes = std::collections::HashSet::new();
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => return Err(AppError::Io(e)),
+        };
+        parse_jsonl_line(&line, path, &mut out, &mut seen_hashes);
     }
     Ok(out)
+}
+
+fn parse_jsonl_line(
+    line: &str,
+    path: &Path,
+    out: &mut Vec<UsageEvent>,
+    seen_hashes: &mut std::collections::HashSet<String>,
+) {
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    if let Ok(v) = serde_json::from_str::<Value>(line) {
+        push_event(out, seen_hashes, v, path);
+    }
 }
 
 fn push_event(
@@ -90,18 +141,13 @@ fn push_event(
 ) {
     if let Some(mut ev) = normalize::normalize(&v) {
         ev.raw_source_path = Some(path.to_string_lossy().to_string());
-        // If raw_json looks like the augmented version, parse the session id out
         if let Some(s) = ev.raw_json.as_deref() {
             if let Ok(parsed) = serde_json::from_str::<Value>(s) {
                 if let Some(sid) = parsed.get("__session_id").and_then(|x| x.as_str()) {
-                    // We stash the session id in raw_json; the DB layer will pull it out
-                    // via a separate field we set on the row. For now, also keep in
-                    // raw_json so dedup covers it.
                     let _ = sid;
                 }
             }
         }
-        // Compute hash
         let hash = dedup::hash_event(
             &ev.timestamp.to_rfc3339(),
             ev.provider.as_deref().unwrap_or(""),
@@ -120,12 +166,107 @@ fn push_event(
 }
 
 fn extract_session_id(v: &Value) -> String {
-    for k in ["sessionID", "session_id", "sessionId", "conversation_id"] {
+    session_id_from_value(v).or_else(|| {
+        v.get("info").and_then(session_id_from_value)
+    }).unwrap_or_default()
+}
+
+fn session_id_from_value(v: &Value) -> Option<String> {
+    for k in ["sessionID", "session_id", "sessionId", "conversation_id", "__session_id"] {
         if let Some(s) = v.get(k).and_then(|x| x.as_str()) {
-            return s.to_string();
+            return Some(s.to_string());
         }
     }
-    String::new()
+    None
+}
+
+fn collect_scan_files(path: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for entry in WalkDir::new(path)
+        .max_depth(MAX_SCAN_DEPTH)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let p = entry.path();
+        if is_supported_extension(p) {
+            files.push(p.to_path_buf());
+            if files.len() >= MAX_FILES_PER_SCAN {
+                warn!(
+                    "Scan hit file cap ({}); remaining files in {} skipped",
+                    MAX_FILES_PER_SCAN,
+                    path.display()
+                );
+                break;
+            }
+        }
+    }
+    files
+}
+
+fn post_process_events(events: &mut [UsageEvent], settings: &ScanSettings) {
+    for ev in events.iter_mut() {
+        let (provider, model) = (
+            ev.provider.clone().unwrap_or_default(),
+            ev.model.clone().unwrap_or_default(),
+        );
+        if !provider.is_empty() && !model.is_empty() {
+            let breakdown = pricing::compute_cost_breakdown(
+                &provider,
+                &model,
+                ev.input_tokens,
+                ev.output_tokens,
+                ev.reasoning_tokens,
+                ev.cache_read_tokens,
+                ev.cache_write_tokens,
+            );
+            ev.cost_usd = breakdown.cost_usd;
+            if matches!(breakdown.status, pricing::CostStatus::Estimated) {
+                ev.exactness = crate::types::Exactness::Estimated;
+            }
+        }
+        if settings.redact {
+            if let Some(s) = &ev.raw_json {
+                ev.raw_json = Some(redaction::redact(s));
+            }
+        }
+        if !settings.store_raw {
+            ev.raw_json = None;
+        }
+    }
+}
+
+fn flush_batch(
+    batch: &mut Vec<UsageEvent>,
+    source_id: i64,
+    result: &mut ScanResult,
+) -> AppResult<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let batch_len = batch.len() as i64;
+    let inserted = persist_events(batch, source_id)?;
+    result.events_inserted += inserted;
+    result.events_skipped_duplicate += batch_len - inserted;
+    batch.clear();
+    Ok(())
+}
+
+fn push_into_batch(
+    batch: &mut Vec<UsageEvent>,
+    mut events: Vec<UsageEvent>,
+    source_id: i64,
+    result: &mut ScanResult,
+) -> AppResult<()> {
+    for ev in events.drain(..) {
+        batch.push(ev);
+        if batch.len() >= PERSIST_BATCH_SIZE {
+            flush_batch(batch, source_id, result)?;
+        }
+    }
+    Ok(())
 }
 
 /// Scan a directory recursively and persist all events.
@@ -134,72 +275,45 @@ pub fn scan_path(path: &Path, source_id: i64) -> AppResult<ScanResult> {
     let mut result = ScanResult::default();
 
     let s = settings::load_all()?;
-    let _estimator_mode = s.token_estimation_mode.clone();
-    let redact = s.redact_secrets;
-    let store_raw = s.store_raw_json;
+    let scan_settings = ScanSettings {
+        redact: s.redact_secrets,
+        store_raw: s.store_raw_json,
+    };
 
-    let mut all_events: Vec<UsageEvent> = Vec::new();
-    for entry in WalkDir::new(path)
-        .max_depth(8)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let p = entry.path();
-        if !is_supported_extension(p) {
-            continue;
-        }
-        match parse_file(p) {
-            Ok(mut events) => {
-                result.files_scanned += 1;
-                for ev in &mut events {
-                    // Optional: estimate missing tokens (not yet implemented for v1)
-                    if ev.total_tokens == 0 {
-                        let _ = _estimator_mode.clone();
-                    }
-                    // Compute cost
-                    let (provider, model) = (
-                        ev.provider.clone().unwrap_or_default(),
-                        ev.model.clone().unwrap_or_default(),
-                    );
-                    if !provider.is_empty() && !model.is_empty() {
-                        ev.cost_usd = pricing::compute_cost(
-                            &provider,
-                            &model,
-                            ev.input_tokens,
-                            ev.output_tokens,
-                            ev.reasoning_tokens,
-                            ev.cache_read_tokens,
-                            ev.cache_write_tokens,
-                        );
-                    }
-                    // Redact
-                    if redact {
-                        if let Some(s) = &ev.raw_json {
-                            ev.raw_json = Some(redaction::redact(s));
-                        }
-                    }
-                    if !store_raw {
-                        ev.raw_json = None;
-                    }
+    let files = collect_scan_files(path);
+    if files.is_empty() {
+        result.duration_ms = start.elapsed().as_millis() as i64;
+        return Ok(result);
+    }
+
+    let mut batch: Vec<UsageEvent> = Vec::with_capacity(PERSIST_BATCH_SIZE);
+
+    for file_chunk in files.chunks(PARALLEL_FILE_CHUNK) {
+        let parsed: Vec<(PathBuf, AppResult<Vec<UsageEvent>>)> = file_chunk
+            .par_iter()
+            .map(|p| {
+                let parsed = parse_file(p);
+                (p.clone(), parsed)
+            })
+            .collect();
+
+        for (p, file_result) in parsed {
+            match file_result {
+                Ok(mut events) => {
+                    result.files_scanned += 1;
+                    post_process_events(&mut events, &scan_settings);
+                    push_into_batch(&mut batch, events, source_id, &mut result)?;
                 }
-                all_events.extend(events);
-            }
-            Err(e) => {
-                result.errors.push(format!("{}: {}", p.display(), e));
+                Err(e) => {
+                    result.errors.push(format!("{}: {}", p.display(), e));
+                }
             }
         }
     }
 
-    // Persist
-    let inserted = persist_events(&all_events, source_id)?;
-    result.events_inserted = inserted;
-    result.events_skipped_duplicate = (all_events.len() as i64) - inserted;
+    flush_batch(&mut batch, source_id, &mut result)?;
     result.duration_ms = start.elapsed().as_millis() as i64;
 
-    // Touch the source timestamp / clear error
     let _ = db::with_conn_mut(|conn| {
         db::update_source_scanned(conn, source_id).unwrap_or(());
         Ok::<(), AppError>(())
@@ -225,18 +339,15 @@ pub fn persist_events(events: &[UsageEvent], source_id: i64) -> AppResult<i64> {
         let tx = conn.unchecked_transaction()?;
         let mut inserted = 0i64;
 
-        // Session cache: (source_id, source_session_id) -> session_id
         let mut session_cache: std::collections::HashMap<(i64, String), i64> =
             std::collections::HashMap::new();
 
         for ev in events {
-            // Upsert session
             let session_db_id = if let Some(sid) = extract_session_id_from_event(ev) {
                 let key = (source_id, sid.clone());
                 if let Some(id) = session_cache.get(&key) {
                     Some(*id)
                 } else {
-                    // Insert or get
                     tx.execute(
                         "INSERT OR IGNORE INTO sessions
                             (source_session_id, source_id, provider, model, started_at, last_seen_at, exactness)
@@ -262,7 +373,6 @@ pub fn persist_events(events: &[UsageEvent], source_id: i64) -> AppResult<i64> {
                 None
             };
 
-            // Try insert; skip on duplicate
             let r = tx.execute(
                 "INSERT OR IGNORE INTO usage_events
                   (event_hash, timestamp, source_id, session_id, event_type, provider, model,
@@ -297,7 +407,6 @@ pub fn persist_events(events: &[UsageEvent], source_id: i64) -> AppResult<i64> {
             )?;
             if r > 0 {
                 inserted += 1;
-                // Update session totals
                 if let Some(sid) = session_db_id {
                     tx.execute(
                         "UPDATE sessions SET
@@ -339,7 +448,11 @@ fn extract_session_id_from_event(ev: &UsageEvent) -> Option<String> {
 pub fn scan_source_kind(kind: SourceKind, path: &Path) -> AppResult<ScanResult> {
     let name = format!("{}: {}", kind.as_str(), path.display());
     let source_id = db::upsert_source(&name, kind, Some(path.to_str().unwrap_or("")))?;
-    let res = scan_path(path, source_id);
+    let res = if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("db") {
+        crate::collectors::opencode_db::scan_db(path, source_id)
+    } else {
+        scan_path(path, source_id)
+    };
     match &res {
         Ok(r) => {
             let _ = db::with_conn_mut(|conn| {
@@ -368,43 +481,33 @@ pub fn parse_and_persist_file_sync(
     source_id: i64,
     _kind: SourceKind,
 ) -> AppResult<usize> {
+    let s = settings::load_all()?;
+    let scan_settings = ScanSettings {
+        redact: s.redact_secrets,
+        store_raw: s.store_raw_json,
+    };
     let mut events = parse_file(path)?;
     if events.is_empty() {
         return Ok(0);
     }
-    for ev in &mut events {
-        let (provider, model) = (
-            ev.provider.clone().unwrap_or_default(),
-            ev.model.clone().unwrap_or_default(),
-        );
-        if !provider.is_empty() && !model.is_empty() {
-            ev.cost_usd = pricing::compute_cost(
-                &provider,
-                &model,
-                ev.input_tokens,
-                ev.output_tokens,
-                ev.reasoning_tokens,
-                ev.cache_read_tokens,
-                ev.cache_write_tokens,
-            );
-        }
-    }
+    post_process_events(&mut events, &scan_settings);
     let inserted = persist_events(&events, source_id)?;
     Ok(inserted as usize)
 }
 
-/// Async wrapper for the watcher. Currently the underlying work is sync
-/// (rusqlite), but the signature is async to match Tauri command ergonomics.
+/// Async wrapper for the watcher. Offloads sync SQLite work to a blocking thread.
 pub async fn parse_and_persist_file(
     path: &Path,
     source_id: i64,
     kind: SourceKind,
 ) -> AppResult<usize> {
-    parse_and_persist_file_sync(path, source_id, kind)
+    let path = path.to_path_buf();
+    scan::run_blocking(move || parse_and_persist_file_sync(&path, source_id, kind)).await
 }
 
 /// Default OpenCode log directories per platform.
-pub fn default_opencode_log_paths() -> Vec<PathBuf> {    let mut paths = Vec::new();
+pub fn default_opencode_log_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
     if let Some(home) = dirs::home_dir() {
         #[cfg(windows)]
         {
@@ -423,4 +526,9 @@ pub fn default_opencode_log_paths() -> Vec<PathBuf> {    let mut paths = Vec::ne
         }
     }
     paths
+}
+
+/// OpenCode stores usage data in SQLite, not the text log folder.
+pub fn default_opencode_db_paths() -> Vec<PathBuf> {
+    crate::collectors::opencode_db::default_db_paths()
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { useFilter } from "@/stores/filter";
+import { useFilterObject } from "@/stores/filter";
 import { getSessions } from "@/lib/tauri";
 import type { Session } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -10,7 +10,7 @@ import { formatDate, formatNumber, formatUsd, exactnessColor } from "@/lib/utils
 import { Search, ChevronRight } from "lucide-react";
 
 export function Sessions() {
-  const filter = useFilter((s) => s.toFilter());
+  const filter = useFilterObject();
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [query, setQuery] = useState("");
 

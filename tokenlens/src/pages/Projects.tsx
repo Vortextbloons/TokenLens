@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useFilter } from "@/stores/filter";
+import { useFilterObject } from "@/stores/filter";
 import { getBreakdown, getUsageTimeseries, getOverviewStats } from "@/lib/tauri";
 import type { Breakdown, TimeseriesPoint, OverviewStats } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -9,7 +9,7 @@ import { formatNumber, formatUsd } from "@/lib/utils";
 import { EmptyState } from "@/components/layout/PageHeader";
 
 export function Projects() {
-  const filter = useFilter((s) => s.toFilter());
+  const filter = useFilterObject();
   const [data, setData] = useState<Breakdown[] | null>(null);
   const [series, setSeries] = useState<TimeseriesPoint[]>([]);
   const [stats, setStats] = useState<OverviewStats | null>(null);

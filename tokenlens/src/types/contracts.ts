@@ -93,6 +93,8 @@ export interface OverviewStats {
   reasoning_token_pct: number;
   cache_savings_usd: number;
   sessions_count: number;
+  unpriced_events: number;
+  unpriced_tokens: number;
   exactness_mix: {
     exact: number;
     estimated: number;

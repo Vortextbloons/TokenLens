@@ -37,20 +37,37 @@ export function formatDate(d: string | null | undefined, withTime = true): strin
   return `${datePart} ${timePart}`;
 }
 
+export function localDateString(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Inclusive calendar-day ranges in local time (7d = today + prior 6 days). */
 export function rangeToDates(range: string): { start: string | null; end: string | null } {
   const end = new Date();
   const start = new Date();
   switch (range) {
-    case "1d": start.setDate(end.getDate() - 1); break;
-    case "7d": start.setDate(end.getDate() - 7); break;
-    case "30d": start.setDate(end.getDate() - 30); break;
-    case "90d": start.setDate(end.getDate() - 90); break;
-    case "all": return { start: null, end: null };
-    default: start.setDate(end.getDate() - 7);
+    case "1d":
+      break;
+    case "7d":
+      start.setDate(end.getDate() - 6);
+      break;
+    case "30d":
+      start.setDate(end.getDate() - 29);
+      break;
+    case "90d":
+      start.setDate(end.getDate() - 89);
+      break;
+    case "all":
+      return { start: null, end: null };
+    default:
+      start.setDate(end.getDate() - 6);
   }
   return {
-    start: start.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10),
+    start: localDateString(start),
+    end: localDateString(end),
   };
 }
 

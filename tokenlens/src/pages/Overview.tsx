@@ -1,17 +1,16 @@
 import { useEffect, useState } from "react";
-import { useFilter } from "@/stores/filter";
+import { useFilterObject } from "@/stores/filter";
 import { getOverviewStats, getUsageTimeseries, getBreakdown, listAlerts, evaluateBudgets } from "@/lib/tauri";
 import type { OverviewStats, TimeseriesPoint, Breakdown } from "@/types/contracts";
-import { PageHeader } from "@/components/layout/PageHeader";
+import { PageHeader, EmptyState } from "@/components/layout/PageHeader";
 import { StatCard, TokensCard, CostCard } from "@/components/cards/StatCard";
 import { Card, CardContent, CardHeader, CardTitle, Skeleton } from "@/components/ui/primitives";
 import { TokensAreaChart, CostLineChart, ModelBarChart, ProviderDonut } from "@/charts";
 import { Cpu, DollarSign, MessageSquare, TrendingUp, AlertTriangle, Sparkles, Database, X } from "lucide-react";
 import { formatNumber, formatPercent, formatUsd } from "@/lib/utils";
 import { Button } from "@/components/ui/primitives";
-import { isTauri, generateSampleData } from "@/lib/tauri";
+import { isTauri, generateSampleData, purgeSampleData } from "@/lib/tauri";
 import { toast } from "@/stores/toast";
-import { EmptyState } from "@/components/layout/PageHeader";
 
 interface AlertRow {
   id: number;
@@ -24,7 +23,7 @@ interface AlertRow {
 }
 
 export function Overview() {
-  const filter = useFilter((s) => s.toFilter());
+  const filter = useFilterObject();
   const [stats, setStats] = useState<OverviewStats | null>(null);
   const [series, setSeries] = useState<TimeseriesPoint[]>([]);
   const [models, setModels] = useState<Breakdown[]>([]);
@@ -45,7 +44,6 @@ export function Overview() {
       setSeries(ts);
       setModels(mb);
       setProviders(pb);
-      // Best-effort alerts (command may not exist in mock mode)
       try {
         if (isTauri) await evaluateBudgets();
         setAlerts(await listAlerts(10));
@@ -69,6 +67,19 @@ export function Overview() {
     }
   };
 
+  const onPurgeSamples = async () => {
+    try {
+      const n = await purgeSampleData();
+      toast({
+        title: n > 0 ? `Removed ${n} sample events` : "No sample data to remove",
+        variant: "success",
+      });
+      reload();
+    } catch (e: any) {
+      toast({ title: "Failed to remove sample data", description: String(e), variant: "destructive" });
+    }
+  };
+
   if (loading && !stats) {
     return (
       <div>
@@ -80,9 +91,20 @@ export function Overview() {
     );
   }
 
-  const unacknowledgedAlerts = alerts.filter((a) => !a.acknowledged_at);
+  if (!stats) {
+    return (
+      <div>
+        <PageHeader title="Overview" description="Real-time AI token and cost analytics — all local." />
+        <EmptyState
+          title="Couldn't load stats"
+          description="The local database hasn't responded yet. Try again in a moment."
+        />
+      </div>
+    );
+  }
 
-  const empty = stats && stats.sessions_count === 0 && stats.tokens_month === 0;
+  const unacknowledgedAlerts = alerts.filter((a) => !a.acknowledged_at);
+  const empty = stats.sessions_count === 0 && stats.tokens_today === 0 && stats.tokens_week === 0;
 
   return (
     <div className="animate-fade-in">
@@ -90,11 +112,16 @@ export function Overview() {
         title="Overview"
         description="All your AI token and cost signals in one place. Nothing leaves this device."
         actions={
-          empty ? (
-            <Button onClick={onSeed}>
-              <Sparkles className="h-4 w-4" /> Generate sample data
+          <div className="flex items-center gap-2">
+            {empty ? (
+              <Button onClick={onSeed}>
+                <Sparkles className="h-4 w-4" /> Generate sample data
+              </Button>
+            ) : null}
+            <Button variant="outline" onClick={onPurgeSamples} title="Delete every event from the built-in sample source">
+              <X className="h-4 w-4" /> Remove sample data
             </Button>
-          ) : null
+          </div>
         }
       />
 
@@ -129,6 +156,19 @@ export function Overview() {
               </button>
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {stats.unpriced_events > 0 ? (
+        <div className="mb-4 flex items-start gap-3 p-3 rounded-md border border-amber-500/40 bg-amber-500/5 text-sm">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-500" />
+          <div>
+            <div className="font-medium">Missing pricing for {formatNumber(stats.unpriced_events)} events</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              {formatNumber(stats.unpriced_tokens)} tokens have no cost row — totals may under-report spend.
+              Add pricing in Settings or set missing-price behavior to estimate.
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -194,7 +234,7 @@ export function Overview() {
             <StatCard
               title="Cache savings"
               value={formatUsd(stats!.cache_savings_usd)}
-              hint="estimated"
+              hint="vs full input rate"
             />
             <StatCard
               title="Largest session"

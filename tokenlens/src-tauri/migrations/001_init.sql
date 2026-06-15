@@ -1,9 +1,6 @@
 -- TokenLens schema v1 (initial)
 -- Idempotent: use IF NOT EXISTS throughout.
-
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
+-- Journal/WAL/foreign_keys pragmas are applied in db::init before migrations run.
 
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,

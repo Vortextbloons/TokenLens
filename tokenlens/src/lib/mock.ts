@@ -13,6 +13,12 @@ import type {
   TimeseriesPoint,
   UsageEvent,
 } from "@/types/contracts";
+import {
+  cacheSavingsForEvent,
+  computeEventCost,
+  isResolved,
+} from "@/lib/cost";
+import { localDateString } from "@/lib/utils";
 
 const now = new Date();
 function ago(days: number, hours = 0): string {
@@ -74,7 +80,18 @@ function makeEvents(): UsageEvent[] {
         const output = 100 + ((m * 73 + day * 17 + s * 7) % 800);
         const reasoning = model.includes("o1") || model.includes("o3") ? Math.floor(output * 0.4) : 0;
         const cache = model.includes("gpt-4o") || model.includes("claude") ? Math.floor(input * 0.6) : 0;
-        const total = input + output;
+        const total = input + output + reasoning;
+        const { cost } = computeEventCost(
+          provider,
+          model,
+          input,
+          output,
+          reasoning,
+          cache,
+          0,
+          PRICING,
+          SETTINGS.missing_price_behavior,
+        );
         out.push({
           event_hash: `mock-${id++}`,
           timestamp: ago(day, m * 2 + s),
@@ -92,7 +109,7 @@ function makeEvents(): UsageEvent[] {
           cache_write_tokens: 0,
           tool_tokens: 0,
           total_tokens: total,
-          cost_usd: provider === "local" ? 0 : total * 0.000005,
+          cost_usd: cost,
           exactness: "exact",
           confidence: 0.95,
           raw_json: null,
@@ -122,7 +139,14 @@ const PRICING: ModelPricing[] = [
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
-    id: 3, provider: "local", model: "any",
+    id: 3, provider: "google", model: "gemini-2.5-flash",
+    input_price_per_million: 0.30, output_price_per_million: 2.50,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.03,
+    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 4, provider: "local", model: "any",
     input_price_per_million: 0, output_price_per_million: 0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0,
     cache_write_price_per_million: 0, currency: "USD", effective_date: null,
@@ -150,25 +174,52 @@ const SETTINGS: AppSettings = {
   collector_endpoint_enabled: false,
 };
 
-function matchFilter(f: QueryFilter | undefined, ev: UsageEvent): boolean {
+function matchDimensionFilter(f: QueryFilter | undefined, ev: UsageEvent): boolean {
   if (!f) return true;
   if (f.provider && ev.provider !== f.provider) return false;
   if (f.model && ev.model !== f.model) return false;
   if (f.exactness && ev.exactness !== f.exactness) return false;
-  if (f.start_date && ev.timestamp < f.start_date) return false;
-  if (f.end_date && ev.timestamp > f.end_date + "T23:59:59.999Z") return false;
   return true;
+}
+
+function matchFilter(f: QueryFilter | undefined, ev: UsageEvent): boolean {
+  if (!matchDimensionFilter(f, ev)) return false;
+  if (!f) return true;
+  const d = localDateString(new Date(ev.timestamp));
+  if (f.start_date && d < f.start_date) return false;
+  if (f.end_date && d > f.end_date) return false;
+  return true;
+}
+
+function withinRollingDays(ts: string, days: number): boolean {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - (days - 1));
+  cutoff.setHours(0, 0, 0, 0);
+  return new Date(ts) >= cutoff;
 }
 
 function overviewFor(filter: QueryFilter): OverviewStats {
   const filtered = EVENTS.filter((e) => matchFilter(filter, e));
-  const today = ago(0).slice(0, 10);
-  const tokens_today = filtered.filter((e) => e.timestamp.startsWith(today)).reduce((a, b) => a + b.total_tokens, 0);
-  const tokens_week = filtered.reduce((a, b) => a + b.total_tokens, 0);
-  const tokens_month = tokens_week;
-  const cost_today_usd = filtered.filter((e) => e.timestamp.startsWith(today)).reduce((a, b) => a + b.cost_usd, 0);
-  const cost_week_usd = filtered.reduce((a, b) => a + b.cost_usd, 0);
-  const cost_month_usd = cost_week_usd;
+  const dimensionFiltered = EVENTS.filter((e) => matchDimensionFilter(filter, e));
+  const today = localDateString(now);
+  const tokens_today = dimensionFiltered
+    .filter((e) => localDateString(new Date(e.timestamp)) === today)
+    .reduce((a, b) => a + b.total_tokens, 0);
+  const tokens_week = dimensionFiltered
+    .filter((e) => withinRollingDays(e.timestamp, 7))
+    .reduce((a, b) => a + b.total_tokens, 0);
+  const tokens_month = dimensionFiltered
+    .filter((e) => withinRollingDays(e.timestamp, 30))
+    .reduce((a, b) => a + b.total_tokens, 0);
+  const cost_today_usd = dimensionFiltered
+    .filter((e) => localDateString(new Date(e.timestamp)) === today)
+    .reduce((a, b) => a + b.cost_usd, 0);
+  const cost_week_usd = dimensionFiltered
+    .filter((e) => withinRollingDays(e.timestamp, 7))
+    .reduce((a, b) => a + b.cost_usd, 0);
+  const cost_month_usd = dimensionFiltered
+    .filter((e) => withinRollingDays(e.timestamp, 30))
+    .reduce((a, b) => a + b.cost_usd, 0);
   const byModel: Record<string, number> = {};
   const byModelCost: Record<string, number> = {};
   for (const e of filtered) {
@@ -181,7 +232,29 @@ function overviewFor(filter: QueryFilter): OverviewStats {
   const in_t = filtered.reduce((a, b) => a + b.input_tokens, 0);
   const out_t = filtered.reduce((a, b) => a + b.output_tokens, 0);
   const reas_t = filtered.reduce((a, b) => a + b.reasoning_tokens, 0);
-  const cache_t = filtered.reduce((a, b) => a + b.cache_read_tokens, 0);
+  const unpriced = filtered.filter(
+    (e) =>
+      e.provider &&
+      e.model &&
+      e.provider !== "local" &&
+      e.provider !== "lmstudio" &&
+      !isResolved(e.provider, e.model, PRICING),
+  );
+  const sessionGroups = new Map<number, { tokens: number }>();
+  for (const e of filtered) {
+    if (e.session_id == null) continue;
+    const g = sessionGroups.get(e.session_id) ?? { tokens: 0 };
+    g.tokens += e.total_tokens;
+    sessionGroups.set(e.session_id, g);
+  }
+  let largest_session_id: number | null = null;
+  let largest_session_tokens = 0;
+  for (const [sid, g] of sessionGroups) {
+    if (g.tokens > largest_session_tokens) {
+      largest_session_tokens = g.tokens;
+      largest_session_id = sid;
+    }
+  }
   return {
     tokens_today,
     tokens_week,
@@ -191,13 +264,27 @@ function overviewFor(filter: QueryFilter): OverviewStats {
     cost_month_usd,
     most_used_model,
     most_expensive_model,
-    largest_session_id: SESSIONS[0]?.id ?? null,
-    largest_session_tokens: SESSIONS[0]?.total_tokens ?? 0,
-    avg_tokens_per_session: filtered.length ? tokens_week / Math.max(new Set(filtered.map((e) => e.session_id)).size, 1) : 0,
+    largest_session_id,
+    largest_session_tokens,
+    avg_tokens_per_session: filtered.length
+      ? filtered.reduce((a, b) => a + b.total_tokens, 0) / Math.max(new Set(filtered.map((e) => e.session_id)).size, 1)
+      : 0,
     input_output_ratio: out_t > 0 ? in_t / out_t : 0,
     reasoning_token_pct: (in_t + out_t) > 0 ? (reas_t / (in_t + out_t)) * 100 : 0,
-    cache_savings_usd: (cache_t * 1.25) / 1_000_000,
-    sessions_count: new Set(filtered.map((e) => e.session_id)).size,
+    cache_savings_usd: filtered.reduce(
+      (a, e) =>
+        a +
+        cacheSavingsForEvent(
+          e.provider ?? "",
+          e.model ?? "",
+          e.cache_read_tokens,
+          PRICING,
+        ),
+      0,
+    ),
+    sessions_count: new Set(filtered.map((e) => e.session_id).filter((x) => x != null)).size,
+    unpriced_events: unpriced.length,
+    unpriced_tokens: unpriced.reduce((a, e) => a + e.total_tokens, 0),
     exactness_mix: {
       exact: filtered.filter((e) => e.exactness === "exact").length,
       estimated: filtered.filter((e) => e.exactness === "estimated").length,
@@ -228,18 +315,67 @@ function timeseriesFor(filter: QueryFilter): TimeseriesPoint[] {
 
 function breakdownFor(filter: QueryFilter, dim: string): Breakdown[] {
   const filtered = EVENTS.filter((e) => matchFilter(filter, e));
-  const map: Record<string, Breakdown> = {};
+  const map: Record<string, Breakdown & { sessions: Set<number | null> }> = {};
   for (const e of filtered) {
-    const key = (dim === "model" ? e.model : dim === "provider" ? e.provider : e.provider) ?? "(none)";
+    const key =
+      dim === "model"
+        ? (e.model ?? "(none)")
+        : dim === "provider"
+          ? (e.provider ?? "(none)")
+          : (e.provider ?? "(none)");
     const p = (map[key] ??= {
-      key, total_tokens: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0, sessions_count: 0,
+      key,
+      total_tokens: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 0,
+      sessions_count: 0,
+      sessions: new Set(),
     });
     p.total_tokens += e.total_tokens;
     p.input_tokens += e.input_tokens;
     p.output_tokens += e.output_tokens;
     p.cost_usd += e.cost_usd;
+    p.sessions.add(e.session_id);
   }
-  return Object.values(map).sort((a, b) => b.total_tokens - a.total_tokens);
+  return Object.values(map)
+    .map(({ sessions, ...rest }) => ({
+      ...rest,
+      sessions_count: [...sessions].filter((s) => s != null).length,
+    }))
+    .sort((a, b) => b.total_tokens - a.total_tokens);
+}
+
+function sessionsForFilter(filter: QueryFilter): Session[] {
+  const filtered = EVENTS.filter((e) => matchFilter(filter, e) && e.session_id != null);
+  const bySession = new Map<number, Session>();
+  for (const e of filtered) {
+    const sid = e.session_id!;
+    const base = SESSIONS.find((s) => s.id === sid);
+    const cur = bySession.get(sid) ?? {
+      id: sid,
+      source_session_id: base?.source_session_id ?? `sess-${sid}`,
+      source_id: e.source_id,
+      project_id: e.project_id,
+      title: base?.title ?? null,
+      started_at: e.timestamp,
+      last_seen_at: e.timestamp,
+      provider: e.provider,
+      model: e.model,
+      total_tokens: 0,
+      total_cost_usd: 0,
+      exactness: e.exactness,
+      raw_ref: base?.raw_ref ?? null,
+    };
+    if (e.timestamp < (cur.started_at ?? e.timestamp)) cur.started_at = e.timestamp;
+    if (e.timestamp > (cur.last_seen_at ?? e.timestamp)) cur.last_seen_at = e.timestamp;
+    cur.total_tokens += e.total_tokens;
+    cur.total_cost_usd += e.cost_usd;
+    bySession.set(sid, cur);
+  }
+  return [...bySession.values()].sort(
+    (a, b) => new Date(b.last_seen_at ?? 0).getTime() - new Date(a.last_seen_at ?? 0).getTime(),
+  );
 }
 
 export const MOCK_BACKEND: Record<string, (args: any) => any> = {
@@ -269,12 +405,30 @@ export const MOCK_BACKEND: Record<string, (args: any) => any> = {
   discover_default_sources: () => SOURCES,
   get_overview_stats: ({ filter }: { filter: QueryFilter }) => overviewFor(filter ?? {}),
   get_usage_timeseries: ({ filter }: { filter: QueryFilter }) => timeseriesFor(filter ?? {}),
-  get_sessions: ({ filter }: { filter: QueryFilter }) => {
-    if (filter?.model) return SESSIONS.filter((s) => s.model === filter.model);
-    if (filter?.provider) return SESSIONS.filter((s) => s.provider === filter.provider);
-    return SESSIONS;
+  get_sessions: ({ filter }: { filter: QueryFilter }) => sessionsForFilter(filter ?? {}),
+  get_session_detail: ({ id }: { id: number }) => {
+    const events = EVENTS.filter((e) => e.session_id === id);
+    const base = SESSIONS.find((s) => s.id === id);
+    if (!base && events.length === 0) return null;
+    if (events.length === 0) return base ?? null;
+    return {
+      ...(base ?? {
+        id,
+        source_session_id: `sess-${id}`,
+        source_id: null,
+        project_id: null,
+        title: null,
+        exactness: "exact",
+        raw_ref: null,
+      }),
+      started_at: events.reduce((a, e) => (a < e.timestamp ? a : e.timestamp), events[0].timestamp),
+      last_seen_at: events.reduce((a, e) => (a > e.timestamp ? a : e.timestamp), events[0].timestamp),
+      provider: events[events.length - 1].provider,
+      model: events[events.length - 1].model,
+      total_tokens: events.reduce((a, e) => a + e.total_tokens, 0),
+      total_cost_usd: events.reduce((a, e) => a + e.cost_usd, 0),
+    } satisfies Session;
   },
-  get_session_detail: ({ id }: { id: number }) => SESSIONS.find((s) => s.id === id) ?? null,
   get_session_events: ({ id }: { id: number }) => {
     const s = SESSIONS.find((x) => x.id === id);
     if (!s) return [];
@@ -300,16 +454,85 @@ export const MOCK_BACKEND: Record<string, (args: any) => any> = {
     const i = PRICING.findIndex((x) => x.provider === provider && x.model === model);
     if (i >= 0) PRICING.splice(i, 1);
   },
-  recalculate_costs: () => EVENTS.length,
+  import_pricing_json: ({ rows }: { rows: ModelPricing[] }) => {
+    let inserted = 0, updated = 0, skipped = 0;
+    const errors: string[] = [];
+    for (const r of rows) {
+      if (!r.provider?.trim() || !r.model?.trim()) {
+        skipped++;
+        errors.push(`empty provider/model (provider=${JSON.stringify(r.provider)}, model=${JSON.stringify(r.model)})`);
+        continue;
+      }
+      const i = PRICING.findIndex((x) => x.provider === r.provider && x.model === r.model);
+      const now = new Date().toISOString();
+      const row: ModelPricing = { ...r, updated_at: now };
+      if (i >= 0) {
+        PRICING[i] = { ...row, id: PRICING[i].id };
+        updated++;
+      } else {
+        PRICING.push({ ...row, id: PRICING.length + 1 });
+        inserted++;
+      }
+    }
+    return { received: rows.length, inserted, updated, skipped, errors };
+  },
+  export_pricing: () => PRICING,
+  // Mock: return EVENTS that don't have a matching PRICING row.
+  list_missing_pricing: () => {
+    const groups: Record<string, { provider: string; model: string; events: number; total_tokens: number; current_cost_usd: number }> = {};
+    for (const e of EVENTS) {
+      if (!e.provider || !e.model) continue;
+      const priced = isResolved(e.provider, e.model, PRICING);
+      if (priced) continue;
+      const k = `${e.provider}::${e.model}`;
+      const g = (groups[k] ??= { provider: e.provider, model: e.model, events: 0, total_tokens: 0, current_cost_usd: 0 });
+      g.events += 1;
+      g.total_tokens += e.total_tokens;
+      g.current_cost_usd += e.cost_usd;
+    }
+    return Object.values(groups).sort((a, b) => b.total_tokens - a.total_tokens);
+  },
+  recalculate_costs: () => {
+    let n = 0;
+    for (const e of EVENTS) {
+      if (!e.provider || !e.model) continue;
+      const { cost } = computeEventCost(
+        e.provider,
+        e.model,
+        e.input_tokens,
+        e.output_tokens,
+        e.reasoning_tokens,
+        e.cache_read_tokens,
+        e.cache_write_tokens,
+        PRICING,
+        SETTINGS.missing_price_behavior,
+      );
+      e.cost_usd = cost;
+      n++;
+    }
+    return n;
+  },
   cleanup_raw_events: () => 0,
   vacuum_db: () => undefined,
   rebuild_daily_aggregates: () => undefined,
-  reset_all_data: () => undefined,
+  reset_all_data: () => ({
+    events: 0,
+    sessions: 0,
+    daily_usage: 0,
+    alerts: 0,
+    file_offsets: 0,
+    inbox_files: 0,
+    projects: 0,
+    pricing_history: 0,
+    sources: 0,
+    settings: 0,
+  }),
   db_size_mb: () => 12.4,
   export_csv: () => 0,
   export_json: () => 0,
   backup_db: () => undefined,
   generate_sample_data: () => 100,
+  purge_sample_data: () => 0,
   list_alerts: () => [],
   acknowledge_alert: () => undefined,
   evaluate_budgets_command: () => 0,

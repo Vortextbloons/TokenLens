@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
-import { useFilter } from "@/stores/filter";
+import { useFilterObject } from "@/stores/filter";
 import { getBreakdown } from "@/lib/tauri";
 import type { Breakdown } from "@/types/contracts";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle, Skeleton } from "@/components/ui/primitives";
-import { ModelBarChart, ProviderDonut } from "@/charts";
+import { ModelBarChart } from "@/charts";
 import { formatNumber, formatUsd } from "@/lib/utils";
 import { EmptyState } from "@/components/layout/PageHeader";
 
 export function Models() {
-  const filter = useFilter((s) => s.toFilter());
+  const filter = useFilterObject();
   const [data, setData] = useState<Breakdown[] | null>(null);
 
   useEffect(() => {

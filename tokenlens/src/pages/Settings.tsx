@@ -1,11 +1,18 @@
 import { useEffect, useState } from "react";
-import { getSettings, updateSettings, getSources, addSource, removeSource, scanSource, startWatcher, stopWatcher, listWatchers, discoverDefaultSources, dbSizeMb, cleanupRawEvents, vacuumDb, resetAllData, exportCsv, exportJson, backupDb, listPricing, upsertPricing, deletePricing } from "@/lib/tauri";
+import {
+  getSettings, updateSettings, getSources, addSource, removeSource, scanSource,
+  startWatcher, stopWatcher, listWatchers, discoverDefaultSources, dbSizeMb,
+  cleanupRawEvents, vacuumDb, resetAllData, exportCsv, exportJson, backupDb,
+  listPricing, upsertPricing, deletePricing, importPricingJson, exportPricing,
+  listMissingPricing, recalculateCosts, confirmDialog, isTauri,
+} from "@/lib/tauri";
 import type { AppSettings, Source, ModelPricing } from "@/types/contracts";
+import type { MissingPricingRow } from "@/lib/tauri";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, Switch, Button, Input, Label, Badge, Skeleton, Separator, Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/primitives";
-import { Plus, Trash2, ScanLine, Play, Square, Database, FileDown, Save, RefreshCw, AlertTriangle } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, Switch, Button, Input, Label, Badge, Skeleton, Separator, Tabs, TabsList, TabsTrigger, TabsContent, Textarea } from "@/components/ui/primitives";
+import { Plus, Trash2, ScanLine, Play, Square, Database, FileDown, FileUp, Wand2, ListChecks, Save, RefreshCw, AlertTriangle } from "lucide-react";
 import { toast } from "@/stores/toast";
-import { formatUsd } from "@/lib/utils";
+import { formatUsd, formatNumber } from "@/lib/utils";
 
 export function Settings() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -15,6 +22,11 @@ export function Settings() {
   const [pricing, setPricing] = useState<ModelPricing[]>([]);
   const [newSource, setNewSource] = useState({ name: "", path: "" });
   const [editingPricing, setEditingPricing] = useState<ModelPricing | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [missing, setMissing] = useState<MissingPricingRow[] | null>(null);
+  const [scanningIds, setScanningIds] = useState<Set<number>>(new Set());
+  const [heavyOp, setHeavyOp] = useState(false);
 
   const reload = async () => {
     const [s, src, w, sz, pr] = await Promise.all([
@@ -52,16 +64,35 @@ export function Settings() {
   };
 
   const onScan = async (id: number) => {
+    if (scanningIds.has(id) || heavyOp) return;
+    setScanningIds((prev) => new Set(prev).add(id));
     try {
       const r = await scanSource(id);
+      const source = sources.find((s) => s.id === id);
+      const isDb = source?.path?.endsWith(".db");
+      const label = isDb ? "database" : "files";
+      let description = `${r.events_inserted} inserted, ${r.events_skipped_duplicate} duplicates (${r.duration_ms}ms).`;
+      if (r.events_inserted === 0 && r.events_skipped_duplicate === 0 && !isDb && r.files_scanned > 0) {
+        description =
+          "No token events found. OpenCode stores usage in opencode.db — use Discover defaults and scan the OpenCode DB source instead.";
+      }
+      if (r.errors.length > 0) {
+        description += ` ${r.errors.length} error(s).`;
+      }
       toast({
-        title: `Scanned ${r.files_scanned} files`,
-        description: `${r.events_inserted} inserted, ${r.events_skipped_duplicate} duplicates.`,
-        variant: "success",
+        title: `Scanned ${r.files_scanned} ${label}`,
+        description,
+        variant: r.events_inserted > 0 || r.events_skipped_duplicate > 0 ? "success" : "default",
       });
       reload();
     } catch (e: any) {
       toast({ title: "Scan failed", description: String(e), variant: "destructive" });
+    } finally {
+      setScanningIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -100,14 +131,32 @@ export function Settings() {
   };
 
   const onVacuum = async () => {
+    if (heavyOp) return;
+    setHeavyOp(true);
     try { await vacuumDb(); toast({ title: "Database vacuumed", variant: "success" }); reload(); }
     catch (e: any) { toast({ title: "Vacuum failed", description: String(e), variant: "destructive" }); }
+    finally { setHeavyOp(false); }
   };
 
   const onReset = async () => {
-    if (!confirm("This will delete all events, sessions, and pricing history. Continue?")) return;
-    try { await resetAllData(); toast({ title: "All data reset", variant: "destructive" }); reload(); }
-    catch (e: any) { toast({ title: "Reset failed", description: String(e), variant: "destructive" }); }
+    if (!(await confirmDialog(
+      "Reset TokenLens?\n\n" +
+      "This will permanently delete all events, sessions, sources, alerts, " +
+      "and settings. Model pricing is kept. This cannot be undone.",
+      { title: "Reset all data", kind: "warning" }
+    ))) return;
+    try {
+      const s = await resetAllData();
+      const total = s.events + s.sessions + s.daily_usage + s.alerts +
+                    s.file_offsets + s.inbox_files + s.projects +
+                    s.pricing_history + s.sources + s.settings;
+      toast({
+        title: total > 0 ? `Reset complete (${total} rows cleared)` : "Nothing to reset",
+        description: `${s.events} events, ${s.sessions} sessions, ${s.sources} sources, ${s.settings} settings`,
+        variant: "destructive",
+      });
+      reload();
+    } catch (e: any) { toast({ title: "Reset failed", description: String(e), variant: "destructive" }); }
   };
 
   const onExport = async (kind: "csv" | "json") => {
@@ -141,9 +190,151 @@ export function Settings() {
   };
 
   const onDeletePricing = async (provider: string, model: string) => {
-    if (!confirm(`Delete pricing for ${provider}/${model}?`)) return;
+    if (!(await confirmDialog(`Delete pricing for ${provider}/${model}?`, { kind: "warning" }))) return;
     try { await deletePricing(provider, model); reload(); }
     catch (e: any) { toast({ title: "Delete failed", description: String(e), variant: "destructive" }); }
+  };
+
+  // ----- Pricing research workflow (see docs/pricing-research-preset.md) -----
+
+  const loadMissing = async () => {
+    try {
+      const rows = await listMissingPricing();
+      setMissing(rows);
+      if (rows.length === 0) {
+        toast({ title: "No missing pricing rows", description: "Every in-use model already has a price." });
+      }
+    } catch (e: any) {
+      toast({ title: "Failed to load missing pricing", description: String(e), variant: "destructive" });
+    }
+  };
+
+  // Export both already-priced rows AND missing rows as a single JSON envelope.
+  // The envelope format is what the AI preset consumes; the AI then returns
+  // just the rows it can fill in, which we feed back through importPricingJson.
+  const onExportForAI = async () => {
+    try {
+      const [priced, missingRows] = await Promise.all([
+        exportPricing(),
+        listMissingPricing(),
+      ]);
+      const envelope = {
+        generated_at: new Date().toISOString(),
+        instruction: "See docs/pricing-research-preset.md. Output a JSON array of ModelPricing rows; one per missing pair.",
+        already_priced: priced,
+        missing: missingRows,
+      };
+      const json = JSON.stringify(envelope, null, 2);
+      // Prefer Tauri save dialog when available; otherwise use a clipboard
+      // prompt so the user can paste into Cursor.
+      if (isTauri) {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+        const path = await save({
+          title: "Save pricing research input",
+          defaultPath: "tokenlens-pricing-research.json",
+          filters: [{ name: "JSON", extensions: ["json"] }],
+        });
+        if (!path) return;
+        await writeTextFile(path, json);
+        toast({ title: "Saved research input", description: path, variant: "success" });
+      } else {
+        await navigator.clipboard.writeText(json).catch(() => {});
+        const ok = confirm(
+          "Pricing research JSON copied to clipboard (mock mode — no save dialog).\n\n" +
+          "Paste it into the AI preset. The output JSON from the AI goes into Settings → Pricing → Import JSON."
+        );
+        if (ok) {
+          setImportText("");
+          setImportOpen(true);
+        }
+      }
+    } catch (e: any) {
+      toast({ title: "Export failed", description: String(e), variant: "destructive" });
+    }
+  };
+
+  // Parse the user-pasted JSON. Accept either a bare array of ModelPricing
+  // rows OR the same envelope we produced on export (in which case we look
+  // for the array under common keys). We don't try to be too clever — the
+  // AI is told to return a bare array.
+  const onImport = async () => {
+    const raw = importText.trim();
+    if (!raw) {
+      toast({ title: "Paste JSON first", variant: "destructive" });
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e: any) {
+      toast({ title: "Invalid JSON", description: String(e), variant: "destructive" });
+      return;
+    }
+    // Normalize to an array of ModelPricing-shaped objects.
+    const arr: unknown[] = Array.isArray(parsed)
+      ? (parsed as unknown[])
+      : Array.isArray((parsed as any)?.rows)
+        ? (parsed as any).rows
+        : Array.isArray((parsed as any)?.pricing)
+          ? (parsed as any).pricing
+          : [];
+    if (arr.length === 0) {
+      toast({
+        title: "No rows found",
+        description: "Expected a JSON array of pricing rows (see docs/pricing-research-preset.md).",
+        variant: "destructive",
+      });
+      return;
+    }
+    const rows: ModelPricing[] = arr.map((r: any, i: number) => ({
+      id: null,
+      provider: String(r.provider ?? "").trim(),
+      model: String(r.model ?? "").trim(),
+      input_price_per_million: Number(r.input_price_per_million ?? 0),
+      output_price_per_million: Number(r.output_price_per_million ?? 0),
+      reasoning_price_per_million: Number(r.reasoning_price_per_million ?? 0),
+      cache_read_price_per_million: Number(r.cache_read_price_per_million ?? 0),
+      cache_write_price_per_million: Number(r.cache_write_price_per_million ?? 0),
+      currency: String(r.currency ?? "USD"),
+      effective_date: r.effective_date ?? null,
+      is_local: Boolean(r.is_local),
+      source: String(r.source ?? "manual"),
+      updated_at: "",
+      // Surface but don't fail on unknown fields so a stray `notes` doesn't
+      // break the import.
+      ...(typeof r.notes === "string" ? { notes: r.notes } as any : {}),
+    }));
+    try {
+      const summary = await importPricingJson(rows);
+      const desc = `received ${summary.received} · inserted ${summary.inserted} · updated ${summary.updated} · skipped ${summary.skipped}` +
+        (summary.errors.length ? ` · ${summary.errors.length} error(s)` : "");
+      toast({
+        title: "Pricing imported",
+        description: desc,
+        variant: summary.errors.length ? "default" : "success",
+      });
+      setImportOpen(false);
+      setImportText("");
+      // Refresh pricing list, then ask the user whether to recalc.
+      await reload();
+      if (await confirmDialog(
+        "Recalculate costs now?\n\n" +
+        "This walks every usage_event and recomputes cost_usd from the new pricing table. " +
+        "Recommended after a bulk import.",
+        { title: "Recalculate costs", kind: "info" }
+      )) {
+        setHeavyOp(true);
+        try {
+          const n = await recalculateCosts();
+          toast({ title: `Recalculated ${n} events`, variant: "success" });
+        } finally {
+          setHeavyOp(false);
+        }
+      }
+    } catch (e: any) {
+      toast({ title: "Import failed", description: String(e), variant: "destructive" });
+    }
   };
 
   if (!settings) {
@@ -195,7 +386,19 @@ export function Settings() {
                           {watchers.find((w) => w[0] === s.id) ? <Badge variant="success">watching</Badge> : null}
                         </div>
                       </div>
-                      <Button variant="outline" size="sm" onClick={() => onScan(s.id)}><ScanLine className="h-3.5 w-3.5" /> Scan</Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={scanningIds.has(s.id) || heavyOp}
+                        onClick={() => onScan(s.id)}
+                      >
+                        {scanningIds.has(s.id) ? (
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <ScanLine className="h-3.5 w-3.5" />
+                        )}
+                        {scanningIds.has(s.id) ? " Scanning…" : " Scan"}
+                      </Button>
                       {watchers.find((w) => w[0] === s.id) ? (
                         <Button variant="outline" size="sm" onClick={() => onStopWatcher(s.id)}><Square className="h-3.5 w-3.5" /></Button>
                       ) : (
@@ -222,6 +425,63 @@ export function Settings() {
         {/* PRICING */}
         <TabsContent value="pricing">
           <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Pricing research workflow</CardTitle>
+              <CardDescription>
+                Use an external AI session to look up missing rates. Export the model list,
+                hand it to the preset, then import the JSON it returns. See{" "}
+                <code className="font-mono text-[11px]">docs/pricing-research-preset.md</code>.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={loadMissing}>
+                  <ListChecks className="h-3.5 w-3.5" /> Show missing pricing
+                </Button>
+                <Button variant="outline" size="sm" onClick={onExportForAI}>
+                  <Wand2 className="h-3.5 w-3.5" /> Export for AI preset
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => { setImportText(""); setImportOpen(true); }}>
+                  <FileUp className="h-3.5 w-3.5" /> Import JSON
+                </Button>
+              </div>
+              {missing !== null ? (
+                missing.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">
+                    All in-use models have pricing rows. Use{" "}
+                    <em>Show missing pricing</em> again later after new models show up.
+                  </div>
+                ) : (
+                  <div className="rounded-md border">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-muted-foreground text-xs">
+                          <th className="text-left p-2">Provider</th>
+                          <th className="text-left p-2">Model</th>
+                          <th className="text-right p-2">Events</th>
+                          <th className="text-right p-2">Tokens</th>
+                          <th className="text-right p-2">Cost (currently $0)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {missing.map((m) => (
+                          <tr key={`${m.provider}-${m.model}`} className="border-b last:border-0 hover:bg-muted/30">
+                            <td className="p-2 font-medium">{m.provider}</td>
+                            <td className="p-2 font-mono text-xs">{m.model}</td>
+                            <td className="p-2 text-right tabular-nums">{formatNumber(m.events)}</td>
+                            <td className="p-2 text-right tabular-nums">{formatNumber(m.total_tokens)}</td>
+                            <td className="p-2 text-right tabular-nums text-muted-foreground">{formatUsd(m.current_cost_usd)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <Card className="mt-4">
             <CardHeader>
               <CardTitle className="text-sm">Model pricing</CardTitle>
               <CardDescription>Per-million-token rates used to compute cost. Edit, add custom, or remove.</CardDescription>
@@ -315,6 +575,34 @@ export function Settings() {
                 <div className="flex gap-2">
                   <Button onClick={onSavePricing}><Save className="h-3.5 w-3.5" /> Save</Button>
                   <Button variant="ghost" onClick={() => setEditingPricing(null)}>Cancel</Button>
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {importOpen ? (
+            <Card className="mt-4">
+              <CardHeader>
+                <CardTitle className="text-sm">Import pricing JSON</CardTitle>
+                <CardDescription>
+                  Paste the JSON array the AI preset produced. Each object should match the
+                  ModelPricing schema (provider, model, *_price_per_million, source).
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Textarea
+                  rows={10}
+                  placeholder={`[\n  {\n    "provider": "openai",\n    "model": "gpt-5.4-mini",\n    "input_price_per_million": 0.25,\n    "output_price_per_million": 2.0,\n    "source": "ai-research:https://openai.com/api/pricing"\n  }\n]`}
+                  value={importText}
+                  onChange={(e) => setImportText(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <Button onClick={onImport}><FileUp className="h-3.5 w-3.5" /> Import</Button>
+                  <Button variant="ghost" onClick={() => { setImportOpen(false); setImportText(""); }}>Cancel</Button>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Tip: import is idempotent. Re-importing the same JSON updates existing rows
+                  and records an entry in <code className="font-mono">pricing_history</code>.
                 </div>
               </CardContent>
             </Card>
