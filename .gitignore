@@ -10,5 +10,16 @@ Thumbs.db
 !.vscode/launch.json
 
 # Build artifacts
-tokenlens/dist/
-tokenlens/src-tauri/target/
+dist/
+src-tauri/target/
+node_modules
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Generated vite config
+vite.config.d.ts
+vite.config.js
+
+# Empty subdirectory
+tokenlens/
