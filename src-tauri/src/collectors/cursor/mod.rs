@@ -24,18 +24,36 @@ pub const SOURCE_PATH: &str = "cursor://account";
 static LAST_BACKGROUND_SYNC_MS: AtomicI64 = AtomicI64::new(0);
 const BACKGROUND_SYNC_INTERVAL_MS: i64 = 3_600_000;
 
+fn imported_totals() -> AppResult<(i64, i64)> {
+    db::with_conn(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(e.total_tokens), 0)
+             FROM usage_events e
+             INNER JOIN sources s ON s.id = e.source_id
+             WHERE e.ignored = 0 AND s.kind = 'cursor'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(Into::into)
+    })
+}
+
 pub fn status() -> AppResult<CursorConnectionStatus> {
     let creds = auth::load()?;
     Ok(match creds {
         None => CursorConnectionStatus::default(),
-        Some(c) => CursorConnectionStatus {
-            connected: true,
-            email_or_user_label: c.label,
-            expires_at: c.expires_at.map(|d| d.to_rfc3339()),
-            last_sync_at: c.last_sync_at.map(|d| d.to_rfc3339()),
-            last_sync_result: c.last_sync_result,
-            events_total: c.events_total,
-        },
+        Some(c) => {
+            let (events_total, tokens_total) = imported_totals().unwrap_or((0, 0));
+            CursorConnectionStatus {
+                connected: true,
+                email_or_user_label: c.label,
+                expires_at: c.expires_at.map(|d| d.to_rfc3339()),
+                last_sync_at: c.last_sync_at.map(|d| d.to_rfc3339()),
+                last_sync_result: c.last_sync_result,
+                events_total,
+                tokens_total,
+            }
+        }
     })
 }
 
@@ -54,12 +72,14 @@ pub async fn sync_now(force: bool) -> AppResult<ScanResult> {
             return Ok(ScanResult::default());
         }
     }
-    let result = scan::run_exclusive_blocking_async(sync_inner).await?;
+    let result = scan::run_exclusive_blocking_async(move || sync_inner(force)).await?;
     LAST_BACKGROUND_SYNC_MS.store(Utc::now().timestamp_millis(), Ordering::Relaxed);
     Ok(result)
 }
 
-pub async fn sync_inner() -> AppResult<ScanResult> {
+/// `full_resync`: when true (manual sync / first connect), pull the full billing
+/// cycle from Cursor. When false (background), only fetch events after the last cursor.
+pub async fn sync_inner(full_resync: bool) -> AppResult<ScanResult> {
     let start = Instant::now();
     let mut result = ScanResult::default();
 
@@ -70,7 +90,7 @@ pub async fn sync_inner() -> AppResult<ScanResult> {
     let client = CursorClient::new(&creds)?;
     let summary = client.validate().await?;
 
-    let (start_ms, end_ms) = if creds.last_sync_cursor.is_some() {
+    let (start_ms, end_ms) = if !full_resync && creds.last_sync_cursor.is_some() {
         (
             creds.last_sync_cursor.map(datetime_to_ms),
             Some(Utc::now().timestamp_millis()),

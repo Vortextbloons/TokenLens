@@ -1,6 +1,6 @@
 [package]
 name = "tokenlens"
-version = "0.2.0"
+version = "0.3.0"
 description = "TokenLens — local-first AI token and cost analytics."
 authors = ["TokenLens Contributors"]
 edition = "2021"
@@ -77,6 +77,9 @@ base64 = "0.22"
 walkdir = "2.5"
 bytecount = "0.6"
 rayon = "1.10"
+
+# Token estimation (BPE for OpenAI-style models)
+tiktoken-rs = "0.7"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

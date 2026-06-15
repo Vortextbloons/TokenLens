@@ -4,18 +4,18 @@ import {
   startWatcher, stopWatcher, listWatchers, discoverDefaultSources, dbSizeMb,
   cleanupRawEvents, vacuumDb, resetAllData, exportCsv, exportJson, backupDb,
   listPricing, upsertPricing, deletePricing, importPricingJson, exportPricing,
-  listMissingPricing, recalculateCosts, confirmDialog, isTauri,
+  listMissingPricing, recalculateCosts, recalculateTokenEstimates, syncPricingSeed, confirmDialog, isTauri,
   cursorStartLogin, cursorDisconnect, cursorGetStatus, cursorSyncNow, cursorConnectWithToken,
   scanInbox,
 } from "@/lib/tauri";
 import type { AppSettings, Source, ModelPricing, CursorConnectionStatus } from "@/types/contracts";
 import type { MissingPricingRow } from "@/lib/tauri";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, Switch, Button, Input, Label, Badge, Skeleton, Separator, Tabs, TabsList, TabsTrigger, TabsContent, Textarea } from "@/components/ui/primitives";
-import { Plus, Trash2, ScanLine, Play, Square, Database, FileDown, FileUp, Wand2, ListChecks, Save, RefreshCw, AlertTriangle, Link2, Unlink } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, Switch, Button, Input, Label, Badge, Skeleton, Separator, Tabs, TabsList, TabsTrigger, TabsContent, Textarea, Select } from "@/components/ui/primitives";
+import { Plus, Trash2, ScanLine, Play, Square, Database, FileDown, FileUp, Wand2, ListChecks, Save, RefreshCw, AlertTriangle, Link2, Unlink, Calculator } from "lucide-react";
 import { toast } from "@/stores/toast";
 import { useFilterObject } from "@/stores/filter";
-import { formatUsd, formatNumber } from "@/lib/utils";
+import { formatUsd, formatNumber, errorMessage, formatDate } from "@/lib/utils";
 import { useTheme } from "@/stores/theme";
 import { useDataRevision } from "@/stores/dataRevision";
 
@@ -67,7 +67,7 @@ export function Settings() {
       }
       await reloadCursor();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorMessage(e);
       setLoadError(msg);
       toast({ title: "Failed to load settings", description: msg, variant: "destructive" });
     }
@@ -102,6 +102,10 @@ export function Settings() {
   }, []);
 
   const save = async (next: AppSettings) => {
+    // Optimistic update so the UI reflects the change immediately.
+    // If the round-trip fails, we'll revert in the catch block.
+    const previous = settings;
+    setSettings(next);
     try {
       const updated = await updateSettings({
         ...next,
@@ -109,8 +113,10 @@ export function Settings() {
       });
       setSettings(updated);
       toast({ title: "Settings saved", variant: "success" });
-    } catch (e: any) {
-      toast({ title: "Save failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      // Revert the optimistic update on failure.
+      if (previous) setSettings(previous);
+      toast({ title: "Save failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -121,8 +127,8 @@ export function Settings() {
       setNewSource({ name: "", path: "" });
       reload();
       toast({ title: "Source added", variant: "success" });
-    } catch (e: any) {
-      toast({ title: "Add source failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Add source failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -148,8 +154,8 @@ export function Settings() {
         variant: r.events_inserted > 0 || r.events_skipped_duplicate > 0 ? "success" : "default",
       });
       reload();
-    } catch (e: any) {
-      toast({ title: "Scan failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Scan failed", description: errorMessage(e), variant: "destructive" });
     } finally {
       setScanningIds((prev) => {
         const next = new Set(prev);
@@ -161,17 +167,17 @@ export function Settings() {
 
   const onRemove = async (id: number) => {
     try { await removeSource(id); reload(); }
-    catch (e: any) { toast({ title: "Remove failed", description: String(e), variant: "destructive" }); }
+    catch (e) { toast({ title: "Remove failed", description: errorMessage(e), variant: "destructive" }); }
   };
 
   const onStartWatcher = async (id: number) => {
     try { await startWatcher(id); reload(); toast({ title: "Watcher started", variant: "success" }); }
-    catch (e: any) { toast({ title: "Start failed", description: String(e), variant: "destructive" }); }
+    catch (e) { toast({ title: "Start failed", description: errorMessage(e), variant: "destructive" }); }
   };
 
   const onStopWatcher = async (id: number) => {
     try { await stopWatcher(id); reload(); toast({ title: "Watcher stopped" }); }
-    catch (e: any) { toast({ title: "Stop failed", description: String(e), variant: "destructive" }); }
+    catch (e) { toast({ title: "Stop failed", description: errorMessage(e), variant: "destructive" }); }
   };
 
   const onDiscover = async () => {
@@ -179,8 +185,8 @@ export function Settings() {
       const found = await discoverDefaultSources();
       toast({ title: `Discovered ${found.length} sources`, description: found.map((f) => f.name).join(", ") });
       reload();
-    } catch (e: any) {
-      toast({ title: "Discovery failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Discovery failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -188,8 +194,8 @@ export function Settings() {
     try {
       await cursorStartLogin();
       toast({ title: "Cursor sign-in opened", description: "Complete sign-in in the window that appears." });
-    } catch (e: any) {
-      toast({ title: "Connect failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Connect failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -201,8 +207,8 @@ export function Settings() {
       setCursorTokenOpen(false);
       toast({ title: "Cursor connected", variant: "success" });
       reload();
-    } catch (e: any) {
-      toast({ title: "Token connect failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Token connect failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -217,8 +223,8 @@ export function Settings() {
         variant: r.events_inserted > 0 ? "success" : "default",
       });
       reload();
-    } catch (e: any) {
-      toast({ title: "Cursor sync failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Cursor sync failed", description: errorMessage(e), variant: "destructive" });
     } finally {
       setCursorSyncing(false);
     }
@@ -234,8 +240,8 @@ export function Settings() {
       await cursorDisconnect();
       toast({ title: "Cursor disconnected" });
       reload();
-    } catch (e: any) {
-      toast({ title: "Disconnect failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Disconnect failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -245,14 +251,14 @@ export function Settings() {
       const n = await cleanupRawEvents(settings.raw_retention_days);
       toast({ title: `Cleaned up ${n} old events`, variant: "success" });
       reload();
-    } catch (e: any) { toast({ title: "Cleanup failed", description: String(e), variant: "destructive" }); }
+    } catch (e) { toast({ title: "Cleanup failed", description: errorMessage(e), variant: "destructive" }); }
   };
 
   const onVacuum = async () => {
     if (heavyOp) return;
     setHeavyOp(true);
     try { await vacuumDb(); toast({ title: "Database vacuumed", variant: "success" }); reload(); }
-    catch (e: any) { toast({ title: "Vacuum failed", description: String(e), variant: "destructive" }); }
+    catch (e) { toast({ title: "Vacuum failed", description: errorMessage(e), variant: "destructive" }); }
     finally { setHeavyOp(false); }
   };
 
@@ -275,7 +281,37 @@ export function Settings() {
       });
       reload();
       bumpData();
-    } catch (e: any) { toast({ title: "Reset failed", description: String(e), variant: "destructive" }); }
+    } catch (e) { toast({ title: "Reset failed", description: errorMessage(e), variant: "destructive" }); }
+  };
+
+  const onRecalcTokenEstimates = async () => {
+    if (!settings) return;
+    setHeavyOp(true);
+    try {
+      const n = await recalculateTokenEstimates();
+      const modeLabel = settings.token_estimation_mode === "tiktoken"
+        ? "tiktoken (BPE)"
+        : settings.token_estimation_mode === "off"
+          ? "off"
+          : "chars/4";
+      if (n > 0) {
+        toast({
+          title: `Estimated ${n} event${n === 1 ? "" : "s"}`,
+          description: `Used ${modeLabel} on stored text. New events already use this mode automatically.`,
+          variant: "default",
+        });
+      } else {
+        toast({
+          title: "No events needed estimation",
+          description: `Either every event already has exact token counts, or none have text payloads to tokenize. New ingestions will use ${modeLabel} going forward.`,
+          variant: "default",
+        });
+      }
+    } catch (e) {
+      toast({ title: "Token estimation failed", description: errorMessage(e), variant: "destructive" });
+    } finally {
+      setHeavyOp(false);
+    }
   };
 
   const onExport = async (kind: "csv" | "json") => {
@@ -284,8 +320,8 @@ export function Settings() {
     try {
       const n = kind === "csv" ? await exportCsv(filter, path) : await exportJson(filter, path);
       toast({ title: `Exported ${n} events`, description: path, variant: "success" });
-    } catch (e: any) {
-      toast({ title: "Export failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Export failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -301,8 +337,8 @@ export function Settings() {
       });
       reload();
       bumpData();
-    } catch (e: any) {
-      toast({ title: "Inbox scan failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Inbox scan failed", description: errorMessage(e), variant: "destructive" });
     } finally {
       setHeavyOp(false);
     }
@@ -312,7 +348,7 @@ export function Settings() {
     const path = prompt("Enter full output path for the SQLite backup:");
     if (!path) return;
     try { await backupDb(path); toast({ title: "Backup complete", description: path, variant: "success" }); }
-    catch (e: any) { toast({ title: "Backup failed", description: String(e), variant: "destructive" }); }
+    catch (e) { toast({ title: "Backup failed", description: errorMessage(e), variant: "destructive" }); }
   };
 
   const onSavePricing = async () => {
@@ -322,15 +358,15 @@ export function Settings() {
       toast({ title: "Pricing saved", variant: "success" });
       setEditingPricing(null);
       reload();
-    } catch (e: any) {
-      toast({ title: "Save failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Save failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
   const onDeletePricing = async (provider: string, model: string) => {
     if (!(await confirmDialog(`Delete pricing for ${provider}/${model}?`, { kind: "warning" }))) return;
     try { await deletePricing(provider, model); reload(); }
-    catch (e: any) { toast({ title: "Delete failed", description: String(e), variant: "destructive" }); }
+    catch (e) { toast({ title: "Delete failed", description: errorMessage(e), variant: "destructive" }); }
   };
 
   // ----- Pricing research workflow (see docs/pricing-research-preset.md) -----
@@ -342,8 +378,24 @@ export function Settings() {
       if (rows.length === 0) {
         toast({ title: "No missing pricing rows", description: "Every in-use model already has a price." });
       }
-    } catch (e: any) {
-      toast({ title: "Failed to load missing pricing", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Failed to load missing pricing", description: errorMessage(e), variant: "destructive" });
+    }
+  };
+
+  const onSyncPricingSeed = async () => {
+    try {
+      const n = await syncPricingSeed();
+      toast({
+        title: n > 0 ? `Added ${n} pricing row(s) from seed` : "Pricing seed already up to date",
+        variant: "success",
+      });
+      await reload();
+      if (n > 0) {
+        setMissing(null);
+      }
+    } catch (e) {
+      toast({ title: "Failed to sync pricing seed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -387,8 +439,8 @@ export function Settings() {
           setImportOpen(true);
         }
       }
-    } catch (e: any) {
-      toast({ title: "Export failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Export failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -405,8 +457,8 @@ export function Settings() {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
-    } catch (e: any) {
-      toast({ title: "Invalid JSON", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Invalid JSON", description: errorMessage(e), variant: "destructive" });
       return;
     }
     // Normalize to an array of ModelPricing-shaped objects.
@@ -470,8 +522,8 @@ export function Settings() {
           setHeavyOp(false);
         }
       }
-    } catch (e: any) {
-      toast({ title: "Import failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Import failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -524,16 +576,18 @@ export function Settings() {
                     <div className="flex flex-wrap gap-2">
                       <Badge variant="success">connected</Badge>
                       {cursorStatus.expires_at ? (
-                        <span className="text-[10px] text-muted-foreground">expires {cursorStatus.expires_at}</span>
+                        <span className="text-[10px] text-muted-foreground">expires {formatDate(cursorStatus.expires_at, false)}</span>
                       ) : null}
                       {cursorStatus.last_sync_at ? (
-                        <span className="text-[10px] text-muted-foreground">last sync {cursorStatus.last_sync_at}</span>
+                        <span className="text-[10px] text-muted-foreground">last sync {formatDate(cursorStatus.last_sync_at)}</span>
                       ) : null}
                     </div>
                     {cursorStatus.last_sync_result ? (
                       <div className="text-[10px] text-muted-foreground">{cursorStatus.last_sync_result}</div>
                     ) : null}
-                    <div className="text-[10px] text-muted-foreground">{formatNumber(cursorStatus.events_total)} events imported</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {formatNumber(cursorStatus.events_total)} events · {formatNumber(cursorStatus.tokens_total ?? 0)} tokens in database
+                    </div>
                   </div>
                   <Button variant="outline" size="sm" disabled={cursorSyncing} onClick={onCursorSync}>
                     {cursorSyncing ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
@@ -651,6 +705,9 @@ export function Settings() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={onSyncPricingSeed}>
+                  <RefreshCw className="h-3.5 w-3.5" /> Sync pricing seed
+                </Button>
                 <Button variant="outline" size="sm" onClick={loadMissing}>
                   <ListChecks className="h-3.5 w-3.5" /> Show missing pricing
                 </Button>
@@ -860,6 +917,35 @@ export function Settings() {
                   <p className="text-xs text-muted-foreground">Replace paths in stored data with hashed tokens.</p>
                 </div>
                 <Switch checked={settings.anonymize_paths} onCheckedChange={(v) => save({ ...settings, anonymize_paths: v })} />
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <Label htmlFor="token-est-mode">Token estimation</Label>
+                <Select
+                  id="token-est-mode"
+                  value={settings.token_estimation_mode ?? "chars4"}
+                  onValueChange={(v) => save({ ...settings, token_estimation_mode: v })}
+                  options={[
+                    { value: "chars4", label: "chars/4 heuristic (fast, ~75% accurate)" },
+                    { value: "tiktoken", label: "tiktoken BPE (model-aware, more accurate)" },
+                    { value: "off", label: "Off (no estimation)" },
+                  ]}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Applied to events that arrive without a provider-reported token count. The
+                  chosen mode is also used by the manual "Recalculate" sweep below and by
+                  future ingest paths. tiktoken uses OpenAI's <code>o200k_base</code> for
+                  modern models and <code>cl100k_base</code> for older GPT-4/3.5.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={heavyOp || settings.token_estimation_mode === "off"}
+                  onClick={onRecalcTokenEstimates}
+                >
+                  <Calculator className="h-3.5 w-3.5" />
+                  {heavyOp ? " Estimating…" : " Recalculate token estimates now"}
+                </Button>
               </div>
               <Separator />
               <div className="flex items-center justify-between">

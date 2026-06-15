@@ -23,16 +23,16 @@ export function Models() {
   return (
     <div className="animate-fade-in">
       <PageHeader title="Models" description="Per-model token and cost breakdown." />
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+        <Card className="xl:col-span-7">
           <CardHeader><CardTitle className="text-sm font-medium">Tokens by model</CardTitle></CardHeader>
-          <CardContent>
+          <CardContent className="min-h-[280px]">
             {data === null ? <Skeleton className="h-72" /> : data.length > 0 ? <ModelBarChart data={data} /> : <EmptyState title="No data" />}
           </CardContent>
         </Card>
-        <Card>
+        <Card className="xl:col-span-5">
           <CardHeader><CardTitle className="text-sm font-medium">Cost by model</CardTitle></CardHeader>
-          <CardContent>
+          <CardContent className="min-h-[280px]">
             {data === null ? <Skeleton className="h-72" /> : data.length > 0 ? (
               <div className="space-y-2">
                 {data.map((d) => (
@@ -51,7 +51,7 @@ export function Models() {
             ) : <EmptyState title="No data" />}
           </CardContent>
         </Card>
-        <Card className="lg:col-span-2">
+        <Card className="xl:col-span-12">
           <CardHeader><CardTitle className="text-sm font-medium">Top models — table</CardTitle></CardHeader>
           <CardContent className="p-0">
             {data === null ? <Skeleton className="h-72 m-5" /> : (

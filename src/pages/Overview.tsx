@@ -8,7 +8,8 @@ import { StatCard, TokensCard, CostCard } from "@/components/cards/StatCard";
 import { Card, CardContent, CardHeader, CardTitle, Skeleton } from "@/components/ui/primitives";
 import { TokensAreaChart, CostLineChart, ModelBarChart, ProviderDonut } from "@/charts";
 import { Cpu, DollarSign, MessageSquare, TrendingUp, AlertTriangle, Sparkles, Database, X } from "lucide-react";
-import { formatNumber, formatPercent, formatUsd } from "@/lib/utils";
+import { formatNumber, formatPercent, formatUsd, errorMessage, formatDelta } from "@/lib/utils";
+import { useFilter } from "@/stores/filter";
 import { Button } from "@/components/ui/primitives";
 import { isTauri, generateSampleData, purgeSampleData } from "@/lib/tauri";
 import { toast } from "@/stores/toast";
@@ -25,6 +26,7 @@ interface AlertRow {
 
 export function Overview() {
   const filter = useFilterObject();
+  const range = useFilter((s) => s.range);
   const dataRevision = useDataRevision((s) => s.revision);
   const [stats, setStats] = useState<OverviewStats | null>(null);
   const [series, setSeries] = useState<TimeseriesPoint[]>([]);
@@ -50,8 +52,8 @@ export function Overview() {
         if (isTauri) await evaluateBudgets();
         setAlerts(await listAlerts(10));
       } catch { /* ignore */ }
-    } catch (e: any) {
-      toast({ title: "Failed to load overview", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Failed to load overview", description: errorMessage(e), variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -64,8 +66,8 @@ export function Overview() {
       const n = await generateSampleData();
       toast({ title: `Inserted ${n} sample events`, variant: "success" });
       reload();
-    } catch (e: any) {
-      toast({ title: "Sample data failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Sample data failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -77,8 +79,8 @@ export function Overview() {
         variant: "success",
       });
       reload();
-    } catch (e: any) {
-      toast({ title: "Failed to remove sample data", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Failed to remove sample data", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -106,7 +108,28 @@ export function Overview() {
   }
 
   const unacknowledgedAlerts = alerts.filter((a) => !a.acknowledged_at);
-  const empty = stats.sessions_count === 0 && stats.tokens_today === 0 && stats.tokens_week === 0;
+  const empty = stats.sessions_count === 0 && stats.tokens_lifetime === 0;
+
+  const rangeLabel = range === "1d"
+    ? "today"
+    : range === "7d"
+      ? "last 7 days"
+      : range === "30d"
+        ? "last 30 days"
+        : range === "90d"
+          ? "last 90 days"
+          : "selected period";
+  const periodTokensDelta = formatDelta(stats.period_tokens, stats.prev_period_tokens);
+  const periodCostDelta = formatDelta(stats.period_cost_usd, stats.prev_period_cost_usd);
+  const prevRangeLabel = range === "1d"
+    ? "vs yesterday"
+    : range === "7d"
+      ? "vs prior 7 days"
+      : range === "30d"
+        ? "vs prior 30 days"
+        : range === "90d"
+          ? "vs prior 90 days"
+          : "";
 
   return (
     <div className="animate-fade-in">
@@ -167,8 +190,8 @@ export function Overview() {
           <div>
             <div className="font-medium">Missing pricing for {formatNumber(stats.unpriced_events)} events</div>
             <div className="text-xs text-muted-foreground mt-0.5">
-              {formatNumber(stats.unpriced_tokens)} tokens have no cost row — totals may under-report spend.
-              Add pricing in Settings or set missing-price behavior to estimate.
+              {formatNumber(stats.unpriced_tokens)} tokens could not be costed — totals may under-report spend.
+              Open Settings → Pricing to add rates, enable estimate mode, then recalculate costs.
             </div>
           </div>
         </div>
@@ -193,6 +216,18 @@ export function Overview() {
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <TokensCard
+              value={stats!.period_tokens}
+              hint={range === "all" ? "all time" : `${rangeLabel} · ${prevRangeLabel}`}
+              delta={range === "all" ? null : periodTokensDelta}
+            />
+            <CostCard
+              value={stats!.period_cost_usd}
+              hint={range === "all" ? "USD all time" : `USD ${rangeLabel} · ${prevRangeLabel}`}
+              delta={range === "all" ? null : periodCostDelta}
+            />
+            <TokensCard value={stats!.tokens_lifetime} hint="all time" />
+            <CostCard value={stats!.cost_lifetime_usd} hint="USD all time" />
             <TokensCard value={stats!.tokens_today} hint="tokens today" />
             <TokensCard value={stats!.tokens_week} hint="last 7 days" />
             <CostCard value={stats!.cost_today_usd} hint="USD today" />
@@ -246,36 +281,36 @@ export function Overview() {
             />
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
-            <Card>
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 mt-6">
+            <Card className="xl:col-span-6">
               <CardHeader>
                 <CardTitle className="text-sm font-medium">Token usage over time</CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="min-h-[280px]">
                 {series.length > 0 ? <TokensAreaChart data={series} /> : <EmptyState title="No timeseries data" />}
               </CardContent>
             </Card>
-            <Card>
+            <Card className="xl:col-span-6">
               <CardHeader>
                 <CardTitle className="text-sm font-medium">Cost over time</CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="min-h-[280px]">
                 {series.length > 0 ? <CostLineChart data={series} /> : <EmptyState title="No cost data" />}
               </CardContent>
             </Card>
-            <Card>
+            <Card className="xl:col-span-7">
               <CardHeader>
                 <CardTitle className="text-sm font-medium">Usage by model</CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="min-h-[280px]">
                 {models.length > 0 ? <ModelBarChart data={models} /> : <EmptyState title="No model data" />}
               </CardContent>
             </Card>
-            <Card>
+            <Card className="xl:col-span-5">
               <CardHeader>
                 <CardTitle className="text-sm font-medium">Usage by provider</CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="min-h-[280px]">
                 {providers.length > 0 ? <ProviderDonut data={providers} /> : <EmptyState title="No provider data" />}
               </CardContent>
             </Card>

@@ -25,18 +25,37 @@ pub fn get_settings() -> AppResult<AppSettings> {
 
 #[tauri::command]
 pub fn update_settings(app: tauri::AppHandle, s: AppSettings) -> AppResult<AppSettings> {
+    // Save the rest of the settings first so a flaky autostart toggle can
+    // never block unrelated changes (e.g. token estimation mode).
     settings::save_all(&s)?;
-    use tauri_plugin_autostart::ManagerExt;
-    if s.autostart {
-        app.autolaunch()
-            .enable()
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-    } else {
-        app.autolaunch()
-            .disable()
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-    }
+
+    // The autostart plugin walks the Windows registry and writes the path
+    // of the current executable. In `tauri dev` or a relocated build, that
+    // path can be invalid and the call returns an io::Error ("The system
+    // cannot find the file specified."). Rather than fail the whole save,
+    // we log a warning and continue — the autostart toggle can be retried
+    // by flipping the switch again once the build is in a stable location.
+    sync_autostart(&app, s.autostart);
+
     Ok(s)
+}
+
+/// Best-effort sync of the system autostart entry with the user's setting.
+/// Logs and swallows errors so callers can still succeed.
+fn sync_autostart(app: &tauri::AppHandle, enable: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    let result = if enable {
+        app.autolaunch().enable()
+    } else {
+        app.autolaunch().disable()
+    };
+    if let Err(e) = result {
+        tracing::warn!(
+            "autostart {} failed (settings saved anyway): {}",
+            if enable { "enable" } else { "disable" },
+            e
+        );
+    }
 }
 
 // ----------------- Sources -----------------
@@ -284,8 +303,25 @@ pub fn delete_pricing(provider: String, model: String) -> AppResult<()> {
 }
 
 #[tauri::command]
+pub fn sync_pricing_seed() -> AppResult<i64> {
+    pricing::sync_seed_rows()
+}
+
+#[tauri::command]
 pub async fn recalculate_costs() -> AppResult<i64> {
     crate::scan::run_exclusive_blocking(pricing::recalculate_all).await
+}
+
+/// Re-run token estimation on events that have no exact token count. Uses
+/// the active `token_estimation_mode` setting (`chars4` or `tiktoken`).
+/// Returns the number of events whose `total_tokens` was updated.
+#[tauri::command]
+pub async fn recalculate_token_estimates() -> AppResult<i64> {
+    crate::scan::run_exclusive_blocking(|| {
+        let mode = settings::load_all()?.token_estimation_mode;
+        crate::token_estimator::recalculate_unknown_events(&mode)
+    })
+    .await
 }
 
 /// Bulk import a list of pricing rows produced by an external AI research

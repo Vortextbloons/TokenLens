@@ -84,7 +84,10 @@ export const listPricing = () => invoke<ModelPricing[]>("list_pricing");
 export const upsertPricing = (p: ModelPricing) => invoke<number>("upsert_pricing", { p });
 export const deletePricing = (provider: string, model: string) =>
   invoke<void>("delete_pricing", { provider, model });
+export const syncPricingSeed = () => invoke<number>("sync_pricing_seed");
 export const recalculateCosts = () => invoke<number>("recalculate_costs");
+export const recalculateTokenEstimates = () =>
+  invoke<number>("recalculate_token_estimates");
 
 // Pricing research workflow — see docs/pricing-research-preset.md.
 // `importPricingJson` accepts a JSON array of ModelPricing rows (the shape

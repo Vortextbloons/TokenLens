@@ -149,7 +149,7 @@ pub async fn connect_with_token(app: &AppHandle, token: &str) -> AppResult<()> {
 
     let app_bg = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = scan::run_exclusive_blocking_async(sync_inner).await {
+        if let Err(e) = scan::run_exclusive_blocking_async(|| sync_inner(true)).await {
             warn!("Initial Cursor sync failed: {e}");
             let _ = app_bg.emit("cursor-sync-error", e.to_string());
         } else {

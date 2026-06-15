@@ -18,6 +18,7 @@ export interface CursorConnectionStatus {
   last_sync_at: string | null;
   last_sync_result: string | null;
   events_total: number;
+  tokens_total: number;
 }
 
 export interface Source {
@@ -88,6 +89,8 @@ export interface ModelPricing {
 }
 
 export interface OverviewStats {
+  tokens_lifetime: number;
+  cost_lifetime_usd: number;
   tokens_today: number;
   tokens_week: number;
   tokens_month: number;
@@ -111,6 +114,14 @@ export interface OverviewStats {
     mixed: number;
     unknown: number;
   };
+  /** Tokens in the user-selected date range. Pairs with `prev_period_tokens`. */
+  period_tokens: number;
+  /** Cost (USD) in the user-selected date range. Pairs with `prev_period_cost_usd`. */
+  period_cost_usd: number;
+  /** Tokens in the immediately preceding period of the same length as the user's selected date range. 0 for "all time" or empty prior windows. */
+  prev_period_tokens: number;
+  /** Cost (USD) in the immediately preceding period of the same length as the user's selected date range. */
+  prev_period_cost_usd: number;
 }
 
 export interface TimeseriesPoint {

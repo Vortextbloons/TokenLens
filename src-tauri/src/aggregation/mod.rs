@@ -94,6 +94,8 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
         // Fixed rolling windows — intentionally ignore the topbar date range.
         let q = format!(
             "SELECT
+                COALESCE(SUM(total_tokens), 0) AS tokens_lifetime,
+                COALESCE(SUM(cost_usd), 0) AS cost_lifetime,
                 COALESCE(SUM(CASE WHEN date(timestamp)=date('now') THEN total_tokens ELSE 0 END), 0) AS tokens_today,
                 COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-6 days') THEN total_tokens ELSE 0 END), 0) AS tokens_week,
                 COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-29 days') THEN total_tokens ELSE 0 END), 0) AS tokens_month,
@@ -106,20 +108,32 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
         let row = stmt.query_row(rusqlite::params_from_iter(rolling_args.iter()), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
+                r.get::<_, f64>(1)?,
                 r.get::<_, i64>(2)?,
-                r.get::<_, f64>(3)?,
-                r.get::<_, f64>(4)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
                 r.get::<_, f64>(5)?,
+                r.get::<_, f64>(6)?,
+                r.get::<_, f64>(7)?,
             ))
         })?;
-        let (tokens_today, tokens_week, tokens_month, cost_today, cost_week, cost_month) = row;
+        let (
+            tokens_lifetime,
+            cost_lifetime,
+            tokens_today,
+            tokens_week,
+            tokens_month,
+            cost_today,
+            cost_week,
+            cost_month,
+        ) = row;
         drop(stmt);
 
         // Period-scoped aggregates for the selected date range.
         let q_period = format!(
             "SELECT
                 COALESCE(SUM(total_tokens), 0) AS period_tokens,
+                COALESCE(SUM(cost_usd), 0) AS period_cost,
                 COALESCE(SUM(input_tokens), 0) AS in_t,
                 COALESCE(SUM(output_tokens), 0) AS out_t,
                 COALESCE(SUM(reasoning_tokens), 0) AS reas_t,
@@ -127,19 +141,47 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
              FROM usage_events {where_sql}",
         );
         let mut stmt = conn.prepare(&q_period)?;
-        let (period_tokens, in_t, out_t, reas_t, _cache_t) = stmt.query_row(
+        let (period_tokens, period_cost, in_t, out_t, reas_t, _cache_t) = stmt.query_row(
             rusqlite::params_from_iter(args.iter()),
             |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
+                    r.get::<_, f64>(1)?,
                     r.get::<_, i64>(2)?,
                     r.get::<_, i64>(3)?,
                     r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
                 ))
             },
         )?;
         drop(stmt);
+
+        // Previous-period aggregate (period-over-period delta).
+        // The "previous" window has the same length as the selected range and
+        // ends the day before start_date. If start_date is null (i.e. "all
+        // time") or the dates can't be parsed, the prior window is empty and
+        // both values stay 0.
+        let (prev_period_tokens, prev_period_cost_usd) = match (
+            filter.start_date.as_deref(),
+            filter.end_date.as_deref(),
+        ) {
+            (Some(start), Some(end)) => {
+                let prev_q = format!(
+                    "SELECT
+                        COALESCE(SUM(total_tokens), 0),
+                        COALESCE(SUM(cost_usd), 0)
+                     FROM usage_events
+                     WHERE date(timestamp) >= date(?1, '-' || (julianday(?2) - julianday(?1)) || ' days')
+                       AND date(timestamp) <= date(?1, '-1 day')"
+                );
+                conn.query_row(
+                    &prev_q,
+                    rusqlite::params![start, end],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)),
+                )?
+            }
+            _ => (0, 0.0),
+        };
 
         // Most used model
         let q2 = format!(
@@ -258,6 +300,8 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
         }
 
         Ok(OverviewStats {
+            tokens_lifetime,
+            cost_lifetime_usd: cost_lifetime,
             tokens_today,
             tokens_week,
             tokens_month,
@@ -276,6 +320,10 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
             unpriced_events,
             unpriced_tokens,
             exactness_mix: mix,
+            period_tokens,
+            period_cost_usd: period_cost,
+            prev_period_tokens,
+            prev_period_cost_usd,
         })
     })
 }

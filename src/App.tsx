@@ -14,6 +14,7 @@ import { Timeline } from "@/pages/Timeline";
 import { RawEvents } from "@/pages/RawEvents";
 import { Settings } from "@/pages/Settings";
 import { MobileNav } from "@/components/layout/MobileNav";
+import { ZoomManager } from "@/components/ZoomManager";
 
 export default function App() {
   return (
@@ -29,7 +30,7 @@ export default function App() {
           <Topbar />
           <MobileNav />
           <main className="flex-1 overflow-y-auto scrollbar-thin">
-            <div className="p-6 max-w-[1400px] mx-auto w-full">
+            <div className="p-4 md:p-6 w-full min-w-0">
               <Routes>
                 <Route path="/" element={<Overview />} />
                 <Route path="/sessions" element={<Sessions />} />
@@ -48,6 +49,7 @@ export default function App() {
         </div>
         <Toaster />
         <AppUpdater />
+        <ZoomManager />
       </div>
     </HashRouter>
   );

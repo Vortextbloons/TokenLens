@@ -74,6 +74,17 @@ pub fn get(provider: &str, model: &str) -> Option<ModelPricing> {
         .cloned()
 }
 
+fn exists_in_db(provider: &str, model: &str) -> AppResult<bool> {
+    db::with_conn(|conn| {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM model_pricing WHERE provider = ?1 AND model = ?2",
+            params![provider, model],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    })
+}
+
 fn cursor_model_alias(model: &str) -> Option<(&'static str, &'static str)> {
     let m = model.to_lowercase();
     if m.starts_with("claude-opus-4-7") || m.starts_with("claude-opus-4.7") {
@@ -541,16 +552,16 @@ pub fn compute_cost(
     compute_cost_breakdown(provider, model, input, output, reasoning, cache_read, cache_write).cost_usd
 }
 
-/// SQL fragment: event has no resolvable pricing row (cloud models only).
+/// SQL fragment: event has no assignable cost after ingest/recalculate.
+/// Aggregator providers (Cursor, OpenCode Go, Copilot, etc.) resolve via underlying
+/// vendor models and never get direct `model_pricing` rows — so we key off stored
+/// cost/exactness instead of a bare JOIN to `model_pricing`.
 pub fn unpriced_event_sql(event_alias: &str) -> String {
     format!(
         "{event_alias}.provider IS NOT NULL AND {event_alias}.model IS NOT NULL
          AND {event_alias}.provider NOT IN ('local', 'lmstudio')
-         AND NOT EXISTS (
-           SELECT 1 FROM model_pricing mp
-           WHERE (mp.provider = {event_alias}.provider AND mp.model = {event_alias}.model)
-              OR (mp.provider = {event_alias}.provider AND mp.model = 'any')
-         )"
+         AND COALESCE({event_alias}.cost_usd, 0) = 0
+         AND {event_alias}.exactness = 'unknown'"
     )
 }
 
@@ -577,22 +588,41 @@ pub fn purge_aggregator_pricing() -> AppResult<()> {
     Ok(())
 }
 
+/// Seed JSON may include Cursor Composer rows; other aggregator providers are excluded.
+fn is_seedable_provider(provider: &str) -> bool {
+    provider == "cursor" || !is_aggregator_provider(provider)
+}
+
 /// Seed default pricing from `pricing/pricing-seed-2026.json`. Idempotent.
-/// First-party models only — aggregator/reseller providers are excluded.
-pub fn seed_defaults() -> AppResult<()> {
+/// First-party models only — aggregator/reseller providers are excluded,
+/// except Cursor Composer models which are Cursor-specific products.
+pub fn seed_defaults() -> AppResult<i64> {
     purge_aggregator_pricing()?;
     let json = include_str!("../../../pricing/pricing-seed-2026.json");
     let all: Vec<ModelPricing> = serde_json::from_str(json)
         .map_err(|e| AppError::Internal(format!("Failed to parse pricing seed JSON: {e}")))?;
+    let mut inserted = 0i64;
     for p in &all {
-        if is_aggregator_provider(&p.provider) {
+        if !is_seedable_provider(&p.provider) {
             continue;
         }
-        if get(&p.provider, &p.model).is_none() {
+        // Check SQLite — not the in-memory cache (empty until prime_cache runs).
+        if !exists_in_db(&p.provider, &p.model)? {
             upsert(p)?;
+            inserted += 1;
         }
     }
-    Ok(())
+    if inserted > 0 {
+        tracing::info!("Seeded {inserted} pricing row(s) from defaults");
+    }
+    Ok(inserted)
+}
+
+/// Insert any seed JSON rows that are missing from the DB (e.g. after a seed file update).
+pub fn sync_seed_rows() -> AppResult<i64> {
+    let n = seed_defaults()?;
+    prime_cache()?;
+    Ok(n)
 }
 
 /// Bulk upsert a set of pricing rows.
@@ -855,6 +885,43 @@ mod tests {
 
     fn seed(p: ModelPricing) {
         cache().write().insert((p.provider.clone(), p.model.clone()), p);
+    }
+
+    #[test]
+    fn pricing_seed_includes_cursor_composers() {
+        let json = include_str!("../../../pricing/pricing-seed-2026.json");
+        let all: Vec<ModelPricing> =
+            serde_json::from_str(json).expect("pricing seed JSON should parse");
+        for model in [
+            "composer-2.5-fast",
+            "composer-2.5",
+            "composer-2",
+            "auto",
+        ] {
+            assert!(
+                all.iter()
+                    .any(|p| p.provider == "cursor" && p.model == model),
+                "seed missing cursor/{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn pricing_seed_includes_opencode_free_models() {
+        let json = include_str!("../../../pricing/pricing-seed-2026.json");
+        let all: Vec<ModelPricing> =
+            serde_json::from_str(json).expect("pricing seed JSON should parse");
+        for model in [
+            "qwen3.6-plus-free",
+            "minimax-m2.5-free",
+            "minimax-m3-free",
+        ] {
+            assert!(
+                all.iter()
+                    .any(|p| p.provider == "opencode" && p.model == model),
+                "seed missing opencode/{model}"
+            );
+        }
     }
 
     #[test]

@@ -73,7 +73,7 @@ export function Sessions() {
                 {filtered.map((s) => (
                   <TableRow key={s.id}>
                     <TableCell>
-                      <div className="font-medium truncate max-w-[260px]">{s.title ?? s.source_session_id}</div>
+                      <div className="font-medium truncate">{s.title ?? s.source_session_id}</div>
                       <div className="text-[10px] text-muted-foreground font-mono">{s.source_session_id}</div>
                     </TableCell>
                     <TableCell>

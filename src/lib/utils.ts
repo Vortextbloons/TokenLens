@@ -27,6 +27,36 @@ export function formatPercent(n: number): string {
   return n.toFixed(1) + "%";
 }
 
+export interface DeltaValue {
+  /** Human-readable label, e.g. "+12.3%" or "-100%" or "new". */
+  value: string;
+  /** True = render in the "good" color (green for the current default). */
+  positive: boolean;
+}
+
+/**
+ * Period-over-period delta for a single KPI.
+ *
+ * - Both zero  -> null (no card chip).
+ * - Previous 0, current > 0 -> "new" (positive=false per default convention).
+ * - Current 0, previous > 0 -> "-100%".
+ * - Otherwise: signed percent change. `positive` follows the
+ *   "up = good = green" convention by default (matches the rest of the UI).
+ */
+export function formatDelta(
+  current: number,
+  previous: number,
+  pct = (n: number) => `${n.toFixed(1)}%`,
+): DeltaValue | null {
+  if (current === 0 && previous === 0) return null;
+  if (previous === 0) return { value: "new", positive: false };
+  if (current === 0) return { value: "-100%", positive: false };
+  const change = ((current - previous) / previous) * 100;
+  const positive = change >= 0;
+  const label = `${positive ? "+" : ""}${pct(change)}`;
+  return { value: label, positive };
+}
+
 export function formatDate(d: string | null | undefined, withTime = true): string {
   if (!d) return "—";
   const date = new Date(d);
@@ -89,4 +119,41 @@ export function formatExactness(e: string): string {
     case "unknown": return "Unknown";
     default: return e;
   }
+}
+
+/**
+ * Best-effort human-readable string for any thrown value.
+ *
+ * Tauri commands return errors as a structured `{ kind, message }` object
+ * (see src-tauri/src/errors.rs). `String(err)` would render that as
+ * "[object Object]" in the UI, so this helper unwraps common shapes and
+ * falls back to JSON serialization. Never throws.
+ */
+export function errorMessage(e: unknown): string {
+  if (e == null) return String(e);
+  if (typeof e === "string") return e;
+  if (typeof e === "number" || typeof e === "boolean" || typeof e === "bigint") {
+    return String(e);
+  }
+  if (e instanceof Error) {
+    return e.message || e.name || "Error";
+  }
+  if (typeof e === "object") {
+    const obj = e as Record<string, unknown>;
+    const message = obj.message;
+    const kind = obj.kind;
+    if (typeof message === "string" && typeof kind === "string") {
+      return `${kind}: ${message}`;
+    }
+    if (typeof message === "string") return message;
+    if (typeof kind === "string" && typeof obj.error === "string") {
+      return `${kind}: ${obj.error}`;
+    }
+    try {
+      return JSON.stringify(e);
+    } catch {
+      return Object.prototype.toString.call(e);
+    }
+  }
+  return String(e);
 }

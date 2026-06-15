@@ -6,20 +6,23 @@ import { Select } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { toast } from "@/stores/toast";
 import { generateSampleData, purgeSampleData, resetAllData, isTauri, recalculateCosts, confirmDialog } from "@/lib/tauri";
+import { errorMessage } from "@/lib/utils";
 import { useDataRevision } from "@/stores/dataRevision";
+import { useZoom } from "@/stores/zoom";
 
 export function Topbar() {
   const { theme, setTheme } = useTheme();
   const { range, setRange } = useFilter();
   const bumpData = useDataRevision((s) => s.bump);
+  const zoom = useZoom((s) => s.zoom);
 
   const onGenerateSamples = async () => {
     try {
       const n = await generateSampleData();
       toast({ title: `Generated ${n} sample events`, variant: "success" });
       bumpData();
-    } catch (e: any) {
-      toast({ title: "Failed to generate samples", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Failed to generate samples", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -31,8 +34,8 @@ export function Topbar() {
         variant: "success",
       });
       bumpData();
-    } catch (e: any) {
-      toast({ title: "Failed to remove sample data", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Failed to remove sample data", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -60,8 +63,8 @@ export function Topbar() {
         variant: "destructive",
       });
       bumpData();
-    } catch (e: any) {
-      toast({ title: "Reset failed", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Reset failed", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -70,8 +73,8 @@ export function Topbar() {
       const n = await recalculateCosts();
       toast({ title: `Recalculated ${n} events`, variant: "success" });
       bumpData();
-    } catch (e: any) {
-      toast({ title: "Failed to recalc", description: String(e), variant: "destructive" });
+    } catch (e) {
+      toast({ title: "Failed to recalc", description: errorMessage(e), variant: "destructive" });
     }
   };
 
@@ -113,6 +116,15 @@ export function Topbar() {
         <Button variant="ghost" size="icon" onClick={onResetAll} title="Reset all data" className="text-destructive hover:text-destructive">
           <RotateCcw className="h-4 w-4" />
         </Button>
+        <span
+          className={cn(
+            "text-[10px] tabular-nums text-muted-foreground hidden sm:inline",
+            zoom !== 1 && "text-foreground",
+          )}
+          title="Ctrl + / Ctrl − to zoom · Ctrl 0 to reset"
+        >
+          {Math.round(zoom * 100)}%
+        </span>
         <div className="flex items-center gap-0.5 ml-1 p-0.5 rounded-md border bg-card">
           {[
             { v: "light", Icon: Sun },

@@ -28,7 +28,7 @@ const PALETTE = [TEAL, CYAN, AMBER, VIOLET, ROSE, SLATE, "#10b981", "#3b82f6"];
 
 export function TokensAreaChart({ data }: { data: TimeseriesPoint[] }) {
   return (
-    <ResponsiveContainer width="100%" height={260}>
+    <ResponsiveContainer width="100%" height={280}>
       <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="inG" x1="0" y1="0" x2="0" y2="1">
@@ -63,7 +63,7 @@ export function TokensAreaChart({ data }: { data: TimeseriesPoint[] }) {
 
 export function CostLineChart({ data }: { data: TimeseriesPoint[] }) {
   return (
-    <ResponsiveContainer width="100%" height={260}>
+    <ResponsiveContainer width="100%" height={280}>
       <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
         <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" tickFormatter={(d) => d.slice(5)} />
@@ -80,13 +80,16 @@ export function CostLineChart({ data }: { data: TimeseriesPoint[] }) {
 }
 
 export function ModelBarChart({ data }: { data: Breakdown[] }) {
-  const top = data.slice(0, 8);
+  const top = data.slice(0, 12);
+  const labelWidth = top.length === 0
+    ? 100
+    : Math.min(220, Math.max(100, ...top.map((d) => d.key.length * 7)));
   return (
-    <ResponsiveContainer width="100%" height={Math.max(180, top.length * 32 + 40)}>
-      <BarChart data={top} layout="vertical" margin={{ top: 8, right: 16, left: 16, bottom: 0 }}>
+    <ResponsiveContainer width="100%" height={Math.max(220, top.length * 36 + 48)}>
+      <BarChart data={top} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
         <XAxis type="number" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" tickFormatter={formatNumber} />
-        <YAxis dataKey="key" type="category" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" width={120} />
+        <YAxis dataKey="key" type="category" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" width={labelWidth} />
         <Tooltip
           contentStyle={{ backgroundColor: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
           formatter={(v: any) => formatNumber(Number(v))}
@@ -100,22 +103,24 @@ export function ModelBarChart({ data }: { data: Breakdown[] }) {
 }
 
 export function ProviderDonut({ data }: { data: Breakdown[] }) {
-  const top = data.slice(0, 6);
+  const top = data.slice(0, 8);
   const total = top.reduce((a, b) => a + b.total_tokens, 0);
   return (
-    <div className="flex items-center gap-4">
-      <PieChart width={160} height={160}>
-        <Pie data={top} dataKey="total_tokens" nameKey="key" innerRadius={50} outerRadius={75} paddingAngle={2}>
-          {top.map((_, i) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
-        </Pie>
-        <Tooltip
-          contentStyle={{ backgroundColor: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12, color: "hsl(var(--popover-foreground))" }}
-          labelStyle={{ color: "hsl(var(--popover-foreground))" }}
-          itemStyle={{ color: "hsl(var(--popover-foreground))" }}
-          formatter={(v: any) => formatNumber(Number(v))}
-        />
-      </PieChart>
-      <div className="flex-1 min-w-0 space-y-1.5">
+    <div className="flex flex-col sm:flex-row items-center gap-6 w-full">
+      <div className="shrink-0">
+        <PieChart width={200} height={200}>
+          <Pie data={top} dataKey="total_tokens" nameKey="key" innerRadius={58} outerRadius={88} paddingAngle={2}>
+            {top.map((_, i) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
+          </Pie>
+          <Tooltip
+            contentStyle={{ backgroundColor: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12, color: "hsl(var(--popover-foreground))" }}
+            labelStyle={{ color: "hsl(var(--popover-foreground))" }}
+            itemStyle={{ color: "hsl(var(--popover-foreground))" }}
+            formatter={(v: any) => formatNumber(Number(v))}
+          />
+        </PieChart>
+      </div>
+      <div className="flex-1 min-w-0 w-full grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2 gap-x-6 gap-y-1.5">
         {top.map((d, i) => (
           <div key={d.key} className="flex items-center gap-2 text-xs">
             <span className="h-2.5 w-2.5 rounded-sm shrink-0" style={{ backgroundColor: PALETTE[i % PALETTE.length] }} />

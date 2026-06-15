@@ -12,6 +12,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-set-title",
     "core:webview:default",
+    "core:webview:allow-set-webview-zoom",
     "core:webview:allow-create-webview-window",
     "core:event:default",
     "core:app:default",

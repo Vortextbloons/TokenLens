@@ -92,7 +92,9 @@ pub struct CursorConnectionStatus {
     pub expires_at: Option<String>,
     pub last_sync_at: Option<String>,
     pub last_sync_result: Option<String>,
+    /// Live count from the local DB (cursor sources), not a cumulative sync counter.
     pub events_total: i64,
+    pub tokens_total: i64,
 }
 
 /// Raw or normalized event before persistence.
@@ -163,6 +165,7 @@ impl UsageEvent {
 /// Pricing record (mirrors `model_pricing` table).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPricing {
+    #[serde(default)]
     pub id: Option<i64>,
     pub provider: String,
     pub model: String,
@@ -175,6 +178,7 @@ pub struct ModelPricing {
     pub effective_date: Option<String>,
     pub is_local: bool,
     pub source: String,
+    #[serde(default)]
     pub updated_at: String,
 }
 
@@ -212,6 +216,8 @@ pub struct Session {
 /// Overview KPIs for the dashboard.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OverviewStats {
+    pub tokens_lifetime: i64,
+    pub cost_lifetime_usd: f64,
     pub tokens_today: i64,
     pub tokens_week: i64,
     pub tokens_month: i64,
@@ -231,6 +237,19 @@ pub struct OverviewStats {
     pub unpriced_events: i64,
     pub unpriced_tokens: i64,
     pub exactness_mix: ExactnessMix,
+    /// Tokens in the user-selected date range. Mirrors `prev_period_tokens`
+    /// to give a clean current/prior pair.
+    pub period_tokens: i64,
+    /// Cost (USD) in the user-selected date range. Mirrors
+    /// `prev_period_cost_usd` to give a clean current/prior pair.
+    pub period_cost_usd: f64,
+    /// Tokens in the immediately preceding period of the same length as the
+    /// user's selected date range. 0 when the period is "all time" or when
+    /// the prior window is empty.
+    pub prev_period_tokens: i64,
+    /// Cost (USD) in the immediately preceding period of the same length as
+    /// the user's selected date range.
+    pub prev_period_cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

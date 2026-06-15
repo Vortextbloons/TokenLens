@@ -221,6 +221,8 @@ function overviewFor(filter: QueryFilter): OverviewStats {
   const cost_month_usd = dimensionFiltered
     .filter((e) => withinRollingDays(e.timestamp, 30))
     .reduce((a, b) => a + b.cost_usd, 0);
+  const tokens_lifetime = dimensionFiltered.reduce((a, b) => a + b.total_tokens, 0);
+  const cost_lifetime_usd = dimensionFiltered.reduce((a, b) => a + b.cost_usd, 0);
   const byModel: Record<string, number> = {};
   const byModelCost: Record<string, number> = {};
   for (const e of filtered) {
@@ -239,7 +241,8 @@ function overviewFor(filter: QueryFilter): OverviewStats {
       e.model &&
       e.provider !== "local" &&
       e.provider !== "lmstudio" &&
-      !isResolved(e.provider, e.model, PRICING),
+      e.cost_usd === 0 &&
+      e.exactness === "unknown",
   );
   const sessionGroups = new Map<number, { tokens: number }>();
   for (const e of filtered) {
@@ -257,6 +260,8 @@ function overviewFor(filter: QueryFilter): OverviewStats {
     }
   }
   return {
+    tokens_lifetime,
+    cost_lifetime_usd,
     tokens_today,
     tokens_week,
     tokens_month,
@@ -292,6 +297,10 @@ function overviewFor(filter: QueryFilter): OverviewStats {
       mixed: filtered.filter((e) => e.exactness === "mixed").length,
       unknown: filtered.filter((e) => e.exactness === "unknown").length,
     },
+    period_tokens: filtered.reduce((a, e) => a + e.total_tokens, 0),
+    period_cost_usd: filtered.reduce((a, e) => a + e.cost_usd, 0),
+    prev_period_tokens: 0,
+    prev_period_cost_usd: 0,
   };
 }
 
@@ -455,6 +464,7 @@ export const MOCK_BACKEND: Record<string, (args: any) => any> = {
     const i = PRICING.findIndex((x) => x.provider === provider && x.model === model);
     if (i >= 0) PRICING.splice(i, 1);
   },
+  sync_pricing_seed: () => 0,
   import_pricing_json: ({ rows }: { rows: ModelPricing[] }) => {
     let inserted = 0, updated = 0, skipped = 0;
     const errors: string[] = [];
@@ -548,6 +558,7 @@ export const MOCK_BACKEND: Record<string, (args: any) => any> = {
     last_sync_at: null,
     last_sync_result: null,
     events_total: 0,
+    tokens_total: 0,
   }),
   cursor_sync_now: (): ScanResult => ({
     files_scanned: 1,
