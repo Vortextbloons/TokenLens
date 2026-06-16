@@ -52,50 +52,109 @@ const SOURCES: Source[] = [
   },
 ];
 
-const SESSIONS: Session[] = Array.from({ length: 12 }, (_, i) => ({
+const SESSIONS: Session[] = Array.from({ length: 16 }, (_, i) => ({
   id: i + 1,
   source_session_id: `sess-${i}`,
   source_id: 1 + (i % 2),
   project_id: null,
-  title: `Session ${i + 1}: build the dashboard`,
-  started_at: ago(i, 3),
+  title: [
+    "Refactor auth module",
+    "Build analytics dashboard",
+    "Debug payment flow",
+    "Write API integration tests",
+    "Implement search feature",
+    "Optimize database queries",
+    "Set up CI/CD pipeline",
+    "Review pull requests",
+    "Migrate to new framework",
+    "Performance tuning",
+    "Add real-time notifications",
+    "Build admin panel",
+    "Security audit fixes",
+    "Implement caching layer",
+    "Write documentation",
+    "Setup monitoring alerts",
+  ][i],
+  started_at: ago(i, 4),
   last_seen_at: ago(i, 0),
-  provider: ["openai", "anthropic", "google", "local"][i % 4],
-  model: ["gpt-4o", "claude-sonnet-4-5", "gemini-2.5-pro", "llama-3.1-8b"][i % 4],
-  total_tokens: 5000 + (i * 1731) % 120000,
-  total_cost_usd: 0.01 + ((i * 0.27) % 5.5),
+  provider: ["openai", "anthropic", "openai", "google", "anthropic", "openai", "anthropic", "google", "anthropic", "openai", "google", "openai", "anthropic", "google", "google", "openai"][i],
+  model: ["gpt-5.5", "claude-fable-5", "gpt-5.4", "gemini-3.1-pro-preview", "claude-opus-4.8", "gpt-5.4-mini", "claude-sonnet-4.6", "gemini-3.5-flash", "claude-haiku-4.5", "o4-mini", "gemini-3.1-pro-preview", "gpt-5.4", "claude-fable-5", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gpt-5.5"][i],
+  total_tokens: 350000 + ((i * 12347) % 2200000),
+  total_cost_usd: 2.50 + ((i * 3.17) % 95.0),
   exactness: i % 5 === 0 ? "estimated" : "exact",
   raw_ref: null,
 }));
 
 const PRICING: ModelPricing[] = [
   {
-    id: 1, provider: "openai", model: "gpt-4o",
-    input_price_per_million: 2.5, output_price_per_million: 10.0,
-    reasoning_price_per_million: 0, cache_read_price_per_million: 1.25,
-    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
+    id: 1, provider: "openai", model: "gpt-5.5",
+    input_price_per_million: 5.0, output_price_per_million: 30.0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.50,
+    cache_write_price_per_million: 5.0, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
-    id: 2, provider: "anthropic", model: "claude-sonnet-4-5",
+    id: 2, provider: "openai", model: "gpt-5.4",
+    input_price_per_million: 2.5, output_price_per_million: 15.0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.25,
+    cache_write_price_per_million: 2.5, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 3, provider: "openai", model: "gpt-5.4-mini",
+    input_price_per_million: 0.75, output_price_per_million: 4.5,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.075,
+    cache_write_price_per_million: 0.75, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 4, provider: "anthropic", model: "claude-fable-5",
+    input_price_per_million: 10.0, output_price_per_million: 50.0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 1.0,
+    cache_write_price_per_million: 12.5, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 5, provider: "anthropic", model: "claude-opus-4.8",
+    input_price_per_million: 5.0, output_price_per_million: 25.0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.50,
+    cache_write_price_per_million: 6.25, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 6, provider: "anthropic", model: "claude-sonnet-4.6",
     input_price_per_million: 3.0, output_price_per_million: 15.0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0.30,
     cache_write_price_per_million: 3.75, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
-    id: 3, provider: "google", model: "gemini-2.5-flash",
-    input_price_per_million: 0.30, output_price_per_million: 2.50,
-    reasoning_price_per_million: 0, cache_read_price_per_million: 0.03,
+    id: 7, provider: "anthropic", model: "claude-haiku-4.5",
+    input_price_per_million: 1.0, output_price_per_million: 5.0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.10,
+    cache_write_price_per_million: 1.25, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 8, provider: "google", model: "gemini-3.1-pro-preview",
+    input_price_per_million: 2.0, output_price_per_million: 12.0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.20,
     cache_write_price_per_million: 0, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
-    id: 4, provider: "local", model: "any",
-    input_price_per_million: 0, output_price_per_million: 0,
-    reasoning_price_per_million: 0, cache_read_price_per_million: 0,
+    id: 9, provider: "google", model: "gemini-3.5-flash",
+    input_price_per_million: 1.5, output_price_per_million: 9.0,
+    reasoning_price_per_million: 0, cache_read_price_per_million: 0.15,
     cache_write_price_per_million: 0, currency: "USD", effective_date: null,
-    is_local: true, source: "seed", updated_at: ago(7),
+    is_local: false, source: "seed", updated_at: ago(7),
+  },
+  {
+    id: 10, provider: "openai", model: "o4-mini",
+    input_price_per_million: 1.1, output_price_per_million: 4.4,
+    reasoning_price_per_million: 4.4, cache_read_price_per_million: 0.275,
+    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
+    is_local: false, source: "seed", updated_at: ago(7),
   },
 ];
 
@@ -123,15 +182,22 @@ function makeEvents(): UsageEvent[] {
   const out: UsageEvent[] = [];
   let id = 0;
   for (let day = 0; day < 14; day++) {
-    for (let s = 0; s < 3 + (day % 4); s++) {
+    for (let s = 0; s < 4 + (day % 3); s++) {
       const sessionId = `sess-${day}-${s}`;
-      for (let m = 0; m < 5 + (s % 8); m++) {
-        const provider = ["openai", "anthropic", "google", "local"][(day + s + m) % 4];
-        const model = ["gpt-4o", "gpt-4o-mini", "claude-sonnet-4-5", "gemini-2.5-flash", "llama-3.1-8b"][(s + m) % 5];
-        const input = 200 + ((m * 137 + day * 53 + s * 11) % 1500);
-        const output = 100 + ((m * 73 + day * 17 + s * 7) % 800);
-        const reasoning = model.includes("o1") || model.includes("o3") ? Math.floor(output * 0.4) : 0;
-        const cache = model.includes("gpt-4o") || model.includes("claude") ? Math.floor(input * 0.6) : 0;
+      for (let m = 0; m < 6 + (s % 6); m++) {
+        const provider = ["openai", "anthropic", "google", "openai"][(day + s + m) % 4];
+        const model = [
+          "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+          "claude-fable-5", "claude-opus-4.8", "claude-sonnet-4.6", "claude-haiku-4.5",
+          "gemini-3.1-pro-preview", "gemini-3.5-flash",
+          "o4-mini",
+        ][(s + m + day) % 10];
+        const input = 15000 + ((m * 1847 + day * 813 + s * 297) % 180000);
+        const output = 8000 + ((m * 1223 + day * 497 + s * 271) % 95000);
+        const reasoning = model.includes("o3") || model.includes("o4") || model.includes("gpt-5.5") || model.includes("fable")
+          ? Math.floor(output * 0.6) : 0;
+        const cache = model.includes("gpt-5") || model.includes("claude") || model.includes("gemini")
+          ? Math.floor(input * 0.55) : 0;
         const total = input + output + reasoning;
         const { cost } = computeEventCost(
           provider,

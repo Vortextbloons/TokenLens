@@ -30,8 +30,8 @@
 Requires Node 18+, Rust 1.77+, and the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.
 
 ```bash
-git clone https://github.com/<your-username>/tokenlens.git
-cd tokenlens/tokenlens
+git clone https://github.com/Vortextbloons/TokenLens.git
+cd TokenLens
 npm install
 npm run tauri:dev
 ```
@@ -44,7 +44,7 @@ For a release build (`.msi` / `.dmg` / `.deb` / `.AppImage`):
 npm run tauri:build
 ```
 
-Output goes to `tokenlens/src-tauri/target/release/bundle/`.
+Output goes to `src-tauri/target/release/bundle/`.
 
 ## How it works
 
@@ -70,17 +70,14 @@ Output goes to `tokenlens/src-tauri/target/release/bundle/`.
 
 ```
 .
-├─ tokenlens/                  Tauri v2 desktop app
-│  ├─ src/                     React + TypeScript frontend
-│  ├─ src-tauri/               Rust backend (commands, db, ingest, collectors, pricing, redaction)
-│  ├─ collectors/              TS plugin shims
-│  ├─ docs/                    architecture, data model, privacy, design notes
-│  └─ README.md                developer / user guide
-└─ collectors/
-   └─ opencode-plugin/         tiny TypeScript OpenCode plugin (separate README)
+├─ src/                     React + TypeScript frontend
+├─ src-tauri/               Rust backend (commands, db, ingest, collectors, pricing, redaction)
+├─ collectors/              TS plugin shims
+├─ pricing/                 Model pricing seed data (JSON)
+├─ scripts/                 Dev utilities (screenshot capture, etc.)
+├─ docs/                    Architecture, data model, privacy, design notes, screenshots
+└─ README.md                This file
 ```
-
-See [`tokenlens/README.md`](tokenlens/README.md) for the full developer guide, [`tokenlens/docs/architecture.md`](tokenlens/docs/architecture.md) for the data pipeline, and [`tokenlens/docs/privacy.md`](tokenlens/docs/privacy.md) for the privacy model.
 
 ## Privacy
 
@@ -89,11 +86,3 @@ See [`tokenlens/README.md`](tokenlens/README.md) for the full developer guide, [
 - **Secret redaction** strips obvious API keys (OpenAI, Anthropic, Google, GitHub, AWS, JWT, private keys) before raw JSON is persisted.
 - **Path anonymization** is opt-in under Settings.
 - **Reset all data** is a one-click operation.
-
-## Contributing
-
-Contributions are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev workflow (lint, typecheck, tests, Tauri build) and the [`pull request template`](.github/PULL_REQUEST_TEMPLATE.md).
-
-## License
-
-No license file is provided. All rights reserved by the author.

@@ -41,7 +41,8 @@ const page = await context.newPage();
 
 for (const { file, hash } of pages) {
   await page.goto(`${baseUrl}/${hash}`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(800);
+  await page.evaluate(() => document.documentElement.classList.add("dark"));
+  await page.waitForTimeout(2000);
   await page.evaluate(() => {
     for (const span of document.querySelectorAll("span")) {
       if (span.textContent === "Mock") {

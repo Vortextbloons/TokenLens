@@ -578,26 +578,26 @@ fn generate_sample_data_sync() -> AppResult<i64> {
         // 3-8 sessions per day
         let session_count = 3 + (day % 6);
         for s in 0..session_count {
-            let provider = ["openai", "anthropic", "google", "local"][(day + s) as usize % 4];
+            let provider = ["openai", "anthropic", "google", "openai"][(day + s) as usize % 4];
             let model = match provider {
-                "openai" => ["gpt-4o", "gpt-4o-mini", "o1-mini", "gpt-4.1"][s as usize % 4],
-                "anthropic" => ["claude-sonnet-4-5", "claude-haiku-4"][s as usize % 2],
-                "google" => ["gemini-2.5-pro", "gemini-2.5-flash"][s as usize % 2],
-                _ => ["llama-3.1-8b", "qwen2.5-7b"][s as usize % 2],
+                "openai" => ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "o4-mini"][s as usize % 4],
+                "anthropic" => ["claude-fable-5", "claude-opus-4.8", "claude-sonnet-4.6", "claude-haiku-4.5"][s as usize % 4],
+                "google" => ["gemini-3.1-pro-preview", "gemini-3.5-flash"][s as usize % 2],
+                _ => ["gemini-3.1-pro-preview", "gemini-3.5-flash"][s as usize % 2],
             };
             // Each session has 5-15 messages
             let msg_count = 5 + (s % 11);
             for m in 0..msg_count {
                 let ts = date - Duration::minutes((msg_count - m) as i64 * 2);
-                let input = 200 + ((m * 137 + day * 53 + s * 11) % 1500) as i64;
-                let output = 100 + ((m * 73 + day * 17 + s * 7) % 800) as i64;
-                let reasoning = if model.contains("o1") || model.contains("o3") || model.contains("o4") {
-                    (output as f64 * 0.4) as i64
+                let input = 15000i64 + ((m as i64 * 1847 + day * 813 + s * 297) % 180000);
+                let output = 8000i64 + ((m as i64 * 1223 + day * 497 + s * 271) % 95000);
+                let reasoning = if model.contains("o3") || model.contains("o4") || model.contains("gpt-5.5") || model.contains("fable") {
+                    (output as f64 * 0.6) as i64
                 } else { 0 };
-                let cache = if model.contains("gpt-4o") || model.contains("claude") {
-                    ((input as f64) * 0.6) as i64
+                let cache = if model.contains("gpt-5") || model.contains("claude") || model.contains("gemini") {
+                    ((input as f64) * 0.55) as i64
                 } else { 0 };
-                let total = input + output;
+                let total = input + output + reasoning;
                 let ev = UsageEvent {
                     event_hash: dedup::hash_event(
                         &ts.to_rfc3339(),
