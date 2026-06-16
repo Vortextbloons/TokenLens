@@ -283,6 +283,7 @@ fn load_and_persist_from_messages_v1(
 }
 
 /// Load all step-finish events (used by tests).
+#[cfg(test)]
 fn load_from_parts(conn: &Connection) -> AppResult<Vec<UsageEvent>> {
     let mut stmt = conn.prepare(
         "SELECT p.id, p.session_id, p.message_id, p.data,
@@ -329,81 +330,6 @@ fn load_from_parts(conn: &Connection) -> AppResult<Vec<UsageEvent>> {
                 ev.raw_json = Some(serde_json::to_string(&m).unwrap_or_default());
             }
         }
-        apply_cost(&mut ev);
-        out.push(ev);
-    }
-    Ok(out)
-}
-
-/// Older schema with token columns on `messages`.
-fn load_from_messages_v1(conn: &Connection) -> AppResult<Vec<UsageEvent>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, session_id, role, model, prompt_tokens, completion_tokens,
-                COALESCE(created_at, 0) AS ts
-         FROM messages
-         WHERE COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0) > 0",
-    )?;
-
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, Option<String>>(3)?,
-            row.get::<_, Option<i64>>(4)?,
-            row.get::<_, Option<i64>>(5)?,
-            row.get::<_, i64>(6)?,
-        ))
-    })?;
-
-    let mut out = Vec::new();
-    for row in rows {
-        let (msg_id, session_id, role, model, input, output, ts) = row?;
-        let input = input.unwrap_or(0);
-        let output = output.unwrap_or(0);
-        let model = model.unwrap_or_else(|| "unknown".into());
-        let provider = crate::ingest::normalize::detect_provider(&model);
-        let timestamp = ms_to_datetime(ts);
-        let total = input + output;
-        let hash = dedup::hash_event(
-            &timestamp.to_rfc3339(),
-            &provider,
-            &model,
-            &session_id,
-            "message",
-            total,
-            input,
-            output,
-        );
-        let raw = serde_json::json!({
-            "__session_id": session_id,
-            "__message_id": msg_id,
-            "role": role,
-            "model": model,
-        });
-        let mut ev = UsageEvent {
-            event_hash: hash,
-            timestamp,
-            source_id: None,
-            session_id: None,
-            project_id: None,
-            event_type: "message".into(),
-            provider: Some(provider.clone()),
-            model: Some(model),
-            message_role: Some(role),
-            input_tokens: input,
-            output_tokens: output,
-            reasoning_tokens: 0,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-            tool_tokens: 0,
-            total_tokens: total,
-            cost_usd: 0.0,
-            exactness: Exactness::Exact,
-            confidence: 0.95,
-            raw_json: Some(raw.to_string()),
-            raw_source_path: Some(format!("opencode.db:message:{msg_id}")),
-        };
         apply_cost(&mut ev);
         out.push(ev);
     }

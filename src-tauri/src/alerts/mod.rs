@@ -7,8 +7,6 @@ use crate::errors::AppResult;
 use rusqlite::params;
 use rusqlite::OptionalExtension;
 
-const ALERT_TYPES: &[&str] = &["daily_tokens", "monthly_cost"];
-
 pub fn evaluate_budgets() -> AppResult<Vec<i64>> {
     let daily_limit: i64 = read_setting("budget_daily_tokens")
         .and_then(|s| s.parse().ok())

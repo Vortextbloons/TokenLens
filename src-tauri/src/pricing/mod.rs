@@ -864,20 +864,6 @@ fn flush_cost_and_exactness_updates(
     Ok(updated)
 }
 
-fn flush_cost_updates(conn: &mut rusqlite::Connection, batch: &[(i64, f64)]) -> AppResult<i64> {
-    let tx = conn.unchecked_transaction()?;
-    let mut updated = 0i64;
-    for (id, cost) in batch {
-        tx.execute(
-            "UPDATE usage_events SET cost_usd = ?1 WHERE id = ?2",
-            params![cost, id],
-        )?;
-        updated += 1;
-    }
-    tx.commit()?;
-    Ok(updated)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
