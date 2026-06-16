@@ -1,7 +1,7 @@
 {
   "name": "tokenlens",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "description": "Local-first AI token usage and cost tracker. Zero extra AI tokens, zero cloud.",
   "scripts": {
