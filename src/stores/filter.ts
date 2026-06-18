@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { useMemo } from "react";
-import { rangeToDates } from "@/lib/utils";
+import { rangeToDates, localDateString } from "@/lib/utils";
 import type { QueryFilter } from "@/types/contracts";
 
 interface FilterState {
@@ -48,6 +48,7 @@ export function useFilterObject(): QueryFilter {
     const filter: QueryFilter = {
       start_date: start,
       end_date: end,
+      local_date: localDateString(new Date()),
       provider,
       model,
     };

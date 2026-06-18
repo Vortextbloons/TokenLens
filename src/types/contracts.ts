@@ -146,6 +146,7 @@ export interface Breakdown {
 export interface QueryFilter {
   start_date?: string | null;
   end_date?: string | null;
+  local_date?: string | null;
   project_id?: number | null;
   provider?: string | null;
   model?: string | null;

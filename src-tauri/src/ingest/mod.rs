@@ -466,6 +466,48 @@ pub fn persist_events(events: &[UsageEvent], source_id: i64) -> AppResult<i64> {
                 }
             }
         }
+
+        // Keep daily_usage in sync: find the calendar dates affected by the
+        // newly inserted events and rebuild their aggregated rows so the
+        // rolling-window KPIs (today / week / month) are always up-to-date.
+        if inserted > 0 {
+            let hashes_json = serde_json::to_string(
+                &events.iter().map(|e| &e.event_hash).collect::<Vec<_>>(),
+            )
+            .unwrap_or_else(|_| "[]".into());
+            let affected_dates: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "SELECT DISTINCT date(timestamp) FROM usage_events \
+                     WHERE event_hash IN (SELECT value FROM json_each(?1))",
+                )?;
+                let dates: Vec<String> = stmt
+                    .query_map(params![hashes_json], |row| row.get(0))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                dates
+            };
+            for date in &affected_dates {
+                tx.execute(
+                    "DELETE FROM daily_usage WHERE date = ?1",
+                    params![date],
+                )?;
+                tx.execute(
+                    "INSERT INTO daily_usage \
+                     (date, provider, model, project_id, input_tokens, output_tokens, \
+                      reasoning_tokens, cache_read_tokens, cache_write_tokens, total_tokens, \
+                      cost_usd, sessions_count) \
+                     SELECT date(timestamp), provider, model, project_id, \
+                            SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens), \
+                            SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(total_tokens), \
+                            SUM(cost_usd), COUNT(DISTINCT session_id) \
+                     FROM usage_events \
+                     WHERE ignored = 0 AND date(timestamp) = ?1 \
+                     GROUP BY date(timestamp), provider, model, project_id",
+                    params![date],
+                )?;
+            }
+        }
+
         tx.commit()?;
         Ok(inserted)
     })

@@ -140,6 +140,13 @@ fn build_event_where(f: &QueryFilter) -> (String, Vec<rusqlite::types::Value>) {
 pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
     let (where_sql, args) = build_where(filter);
     let (rolling_where_sql, rolling_args) = build_dimension_where(filter);
+    // Use the frontend-provided local date for rolling windows so "today"
+    // matches the user's calendar day, not UTC.  Falls back to the system
+    // local date when the caller doesn't supply one.
+    let local_today = filter
+        .local_date
+        .clone()
+        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
     db::with_conn(|conn| {
         // Rolling windows (today/week/month/lifetime) are pre-aggregated in
         // `daily_usage`, so we can avoid the per-event scan even when the
@@ -152,18 +159,21 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
              tokens_lifetime, cost_lifetime) = if let Some((d_where, d_args)) = daily_rolls {
             let q = format!(
                 "SELECT
-                    COALESCE(SUM(CASE WHEN date=date('now') THEN total_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date>=date('now','-6 days') THEN total_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date>=date('now','-29 days') THEN total_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date=date('now') THEN cost_usd ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date>=date('now','-6 days') THEN cost_usd ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date>=date('now','-29 days') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date=?1 THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date>=date(?1,'-6 days') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date>=date(?1,'-29 days') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date=?1 THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date>=date(?1,'-6 days') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date>=date(?1,'-29 days') THEN cost_usd ELSE 0 END), 0),
                     COALESCE(SUM(total_tokens), 0),
                     COALESCE(SUM(cost_usd), 0)
                  FROM daily_usage {d_where}",
             );
+            let mut all_args: Vec<rusqlite::types::Value> = Vec::new();
+            all_args.push(rusqlite::types::Value::Text(local_today.clone()));
+            all_args.extend(d_args);
             let mut stmt = conn.prepare(&q)?;
-            let row = stmt.query_row(rusqlite::params_from_iter(d_args.iter()), |r| {
+            let row = stmt.query_row(rusqlite::params_from_iter(all_args.iter()), |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)?,
@@ -181,18 +191,21 @@ pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
             // Fallback: scan usage_events with the same CASE expressions.
             let q = format!(
                 "SELECT
-                    COALESCE(SUM(CASE WHEN date(timestamp)=date('now') THEN total_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-6 days') THEN total_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-29 days') THEN total_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date(timestamp)=date('now') THEN cost_usd ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-6 days') THEN cost_usd ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN date(timestamp)>=date('now','-29 days') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)=?1 THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)>=date(?1,'-6 days') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)>=date(?1,'-29 days') THEN total_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)=?1 THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)>=date(?1,'-6 days') THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN date(timestamp)>=date(?1,'-29 days') THEN cost_usd ELSE 0 END), 0),
                     COALESCE(SUM(total_tokens), 0),
                     COALESCE(SUM(cost_usd), 0)
                  FROM usage_events {rolling_where_sql}",
             );
+            let mut all_args: Vec<rusqlite::types::Value> = Vec::new();
+            all_args.push(rusqlite::types::Value::Text(local_today.clone()));
+            all_args.extend(rolling_args);
             let mut stmt = conn.prepare(&q)?;
-            let row = stmt.query_row(rusqlite::params_from_iter(rolling_args.iter()), |r| {
+            let row = stmt.query_row(rusqlite::params_from_iter(all_args.iter()), |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)?,

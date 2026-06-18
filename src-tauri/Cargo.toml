@@ -1,6 +1,6 @@
 [package]
 name = "tokenlens"
-version = "0.3.2"
+version = "0.3.3"
 description = "TokenLens — local-first AI token and cost analytics."
 authors = ["TokenLens Contributors"]
 edition = "2021"

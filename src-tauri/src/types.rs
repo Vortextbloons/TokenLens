@@ -277,6 +277,7 @@ pub struct TimeseriesPoint {
 pub struct QueryFilter {
     pub start_date: Option<String>, // YYYY-MM-DD
     pub end_date: Option<String>,   // YYYY-MM-DD
+    pub local_date: Option<String>, // YYYY-MM-DD in local time (for rolling-window KPIs)
     pub project_id: Option<i64>,
     pub provider: Option<String>,
     pub model: Option<String>,
