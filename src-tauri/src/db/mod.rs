@@ -8,6 +8,7 @@ use crate::types::SourceKind;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -17,6 +18,7 @@ static DB: OnceCell<Arc<Mutex<Connection>>> = OnceCell::new();
 const MIGRATION_001: &str = include_str!("../../migrations/001_init.sql");
 const MIGRATION_002: &str = include_str!("../../migrations/002_cursor_credentials.sql");
 const MIGRATION_003: &str = include_str!("../../migrations/003_compress_raw_json.sql");
+const MIGRATION_004: &str = include_str!("../../migrations/004_file_offsets_mtime.sql");
 
 struct EmbeddedMigration {
     version: i64,
@@ -40,7 +42,18 @@ const EMBEDDED_MIGRATIONS: &[EmbeddedMigration] = &[
         name: "003_compress_raw_json.sql",
         sql: MIGRATION_003,
     },
+    EmbeddedMigration {
+        version: 4,
+        name: "004_file_offsets_mtime.sql",
+        sql: MIGRATION_004,
+    },
 ];
+
+#[derive(Debug, Clone)]
+pub struct FileOffsetState {
+    pub byte_offset: i64,
+    pub file_mtime: Option<i64>,
+}
 
 fn embedded_sql(version: i64) -> Option<&'static str> {
     EMBEDDED_MIGRATIONS
@@ -282,6 +295,50 @@ pub fn ensure_daily_usage_built() -> AppResult<()> {
         info!("daily_usage warm-up complete");
         Ok(())
     })
+}
+
+pub fn load_known_event_hashes(conn: &Connection) -> AppResult<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT event_hash FROM usage_events")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn load_file_offsets(
+    conn: &Connection,
+    source_id: i64,
+) -> AppResult<HashMap<String, FileOffsetState>> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path, byte_offset, file_mtime FROM file_offsets WHERE source_id = ?1",
+    )?;
+    let rows = stmt.query_map(params![source_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            FileOffsetState {
+                byte_offset: r.get::<_, i64>(1)?,
+                file_mtime: r.get::<_, Option<i64>>(2)?,
+            },
+        ))
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn upsert_file_offset(
+    conn: &Connection,
+    source_id: i64,
+    file_path: &str,
+    byte_offset: i64,
+    file_mtime: Option<i64>,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO file_offsets (source_id, file_path, byte_offset, file_mtime, last_seen_at)
+         VALUES (?1, ?2, ?3, ?4, datetime('now'))
+         ON CONFLICT(source_id, file_path) DO UPDATE SET
+           byte_offset = excluded.byte_offset,
+           file_mtime = excluded.file_mtime,
+           last_seen_at = excluded.last_seen_at",
+        params![source_id, file_path, byte_offset, file_mtime],
+    )?;
+    Ok(())
 }
 
 fn apply_embedded_migrations(conn: &Connection, current: i64) -> AppResult<()> {

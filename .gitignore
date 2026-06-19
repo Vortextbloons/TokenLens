@@ -23,3 +23,5 @@ vite.config.js
 
 # Empty subdirectory
 tokenlens/
+plans/
+AGENTS.md

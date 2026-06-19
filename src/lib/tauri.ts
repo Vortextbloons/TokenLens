@@ -16,6 +16,7 @@ import type {
 } from "@/types/contracts";
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+declare const __APP_VERSION__: string;
 
 // Mock backend is dev-only. In Tauri production builds, `__TAURI_INTERNALS__`
 // is always set, so this branch is unreachable. The dynamic import keeps the
@@ -172,6 +173,14 @@ export const evaluateBudgets = () => invoke<number>("evaluate_budgets_command");
 // ----------------- Utility -----------------
 
 export const isTauri = inTauri;
+
+export async function getAppVersion(): Promise<string> {
+  if (inTauri) {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    return getVersion();
+  }
+  return __APP_VERSION__;
+}
 
 /**
  * Show a confirm dialog that works in both Tauri and browser (dev) mode.

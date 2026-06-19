@@ -35,7 +35,7 @@ pub fn default_veyra_paths() -> Vec<std::path::PathBuf> {
 /// understand, persist what we can.
 pub fn parse_veyra_file(path: &Path) -> Vec<UsageEvent> {
     // Re-use the generic OpenCode parser — Veyra logs are also JSONL.
-    match ingest::parse_file(path) {
+    match ingest::parse_file(path, 0) {
         Ok(events) => events,
         Err(e) => {
             warn!("Failed to parse Veyra file {}: {}", path.display(), e);

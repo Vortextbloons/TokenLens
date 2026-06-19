@@ -11,14 +11,15 @@ use crate::db;
 use crate::errors::{AppError, AppResult};
 use crate::pricing;
 use crate::redaction;
-use crate::scan::{self, PERSIST_BATCH_SIZE};
+use crate::scan;
 use crate::settings;
 use crate::types::{ScanResult, SourceKind, UsageEvent};
 use chrono::Utc;
 use rayon::prelude::*;
 use rusqlite::params;
 use serde_json::Value;
-use std::io::{BufRead, BufReader};
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::{debug, warn};
@@ -29,19 +30,140 @@ const JSONL_BUF_CAPACITY: usize = 256 * 1024;
 /// Skip walking extremely deep trees during directory scans.
 const MAX_SCAN_DEPTH: usize = 8;
 /// Cap files per scan to avoid runaway imports on huge trees.
-/// Cap files per scan to avoid runaway imports on huge trees.
 const MAX_FILES_PER_SCAN: usize = 10_000;
-/// Process this many files in parallel before flushing to SQLite.
-const PARALLEL_FILE_CHUNK: usize = 64;
 
 struct ScanSettings {
     redact: bool,
     store_raw: bool,
 }
 
+struct ScanState {
+    known_hashes: HashSet<String>,
+    file_offsets: HashMap<String, db::FileOffsetState>,
+}
+
+#[derive(Clone)]
+struct FilePlan {
+    path: PathBuf,
+    key: String,
+    start_offset: u64,
+    byte_size: i64,
+    file_mtime: Option<i64>,
+}
+
+fn load_scan_state(source_id: i64) -> AppResult<ScanState> {
+    db::with_conn(|conn| {
+        Ok(ScanState {
+            known_hashes: db::load_known_event_hashes(conn)?,
+            file_offsets: db::load_file_offsets(conn, source_id)?,
+        })
+    })
+}
+
+fn file_key(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn file_mtime_millis(metadata: &std::fs::Metadata) -> Option<i64> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|ts| ts.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+}
+
+fn supports_incremental_reads(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase())
+            .as_deref(),
+        Some("jsonl") | Some("ndjson") | Some("log") | Some("txt")
+    )
+}
+
+fn select_start_offset(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    previous: Option<&db::FileOffsetState>,
+) -> u64 {
+    let current_size = metadata.len();
+    let current_mtime = file_mtime_millis(metadata);
+
+    if let Some(prev) = previous {
+        if prev.file_mtime == current_mtime && prev.byte_offset == current_size as i64 {
+            return current_size;
+        }
+        if supports_incremental_reads(path)
+            && prev.byte_offset > 0
+            && current_size as i64 > prev.byte_offset
+        {
+            return prev.byte_offset as u64;
+        }
+    }
+
+    0
+}
+
+fn build_file_plan(path: &Path, state: &ScanState) -> AppResult<Option<FilePlan>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            debug!("Skipping unreadable file {}: {}", path.display(), e);
+            return Ok(None);
+        }
+    };
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+
+    let size = metadata.len();
+    if size > MAX_FILE_SIZE {
+        warn!(
+            "Skipping {}: too large ({} bytes > {} max)",
+            path.display(),
+            size,
+            MAX_FILE_SIZE
+        );
+        return Ok(None);
+    }
+
+    let key = file_key(path);
+    let current_mtime = file_mtime_millis(&metadata);
+    let previous = state.file_offsets.get(&key);
+    if previous
+        .map(|prev| prev.file_mtime == current_mtime && prev.byte_offset == size as i64)
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+
+    let start_offset = select_start_offset(path, &metadata, previous);
+    Ok(Some(FilePlan {
+        path: path.to_path_buf(),
+        key,
+        start_offset,
+        byte_size: size as i64,
+        file_mtime: current_mtime,
+    }))
+}
+
+fn filter_known_events(
+    events: Vec<UsageEvent>,
+    known_hashes: &mut HashSet<String>,
+) -> Vec<UsageEvent> {
+    let mut filtered = Vec::with_capacity(events.len());
+    for ev in events {
+        if known_hashes.insert(ev.event_hash.clone()) {
+            filtered.push(ev);
+        }
+    }
+    filtered
+}
+
 /// Parse a single file (JSONL, JSON array, or "log" with embedded JSON).
 /// Returns a list of normalized events that are not duplicates of each other.
-pub fn parse_file(path: &Path) -> AppResult<Vec<UsageEvent>> {
+pub fn parse_file(path: &Path, start_offset: u64) -> AppResult<Vec<UsageEvent>> {
     let metadata = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) => return Err(AppError::Io(e)),
@@ -62,15 +184,15 @@ pub fn parse_file(path: &Path) -> AppResult<Vec<UsageEvent>> {
     }
 
     // Small files: read whole buffer once (faster for tiny JSON arrays).
-    if size <= JSONL_BUF_CAPACITY as u64 {
-        return parse_file_in_memory(path, size);
+    if start_offset == 0 && size <= JSONL_BUF_CAPACITY as u64 {
+        return parse_file_in_memory(path);
     }
 
-    // Large files: stream JSONL line-by-line to avoid loading hundreds of MB.
-    parse_file_streaming(path)
+    // Large files and incremental resumes: stream JSONL line-by-line.
+    parse_file_streaming(path, start_offset)
 }
 
-fn parse_file_in_memory(path: &Path, size: u64) -> AppResult<Vec<UsageEvent>> {
+fn parse_file_in_memory(path: &Path) -> AppResult<Vec<UsageEvent>> {
     let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -92,11 +214,10 @@ fn parse_file_in_memory(path: &Path, size: u64) -> AppResult<Vec<UsageEvent>> {
     for line in raw.lines() {
         parse_jsonl_line(line, path, &mut out, &mut seen_hashes);
     }
-    let _ = size;
     Ok(out)
 }
 
-fn parse_file_streaming(path: &Path) -> AppResult<Vec<UsageEvent>> {
+fn parse_file_streaming(path: &Path, start_offset: u64) -> AppResult<Vec<UsageEvent>> {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
@@ -105,17 +226,51 @@ fn parse_file_streaming(path: &Path) -> AppResult<Vec<UsageEvent>> {
         }
     };
     let reader = BufReader::with_capacity(JSONL_BUF_CAPACITY, file);
+    let mut reader = reader;
+    if start_offset > 0 {
+        reader
+            .seek(SeekFrom::Start(start_offset))
+            .map_err(AppError::Io)?;
+    }
     let mut out = Vec::new();
     let mut seen_hashes = std::collections::HashSet::new();
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => return Err(AppError::Io(e)),
-        };
+    if start_offset > 0 && should_discard_partial_line(path, start_offset)? {
+        let mut discarded = String::new();
+        if reader.read_line(&mut discarded).map_err(AppError::Io)? == 0 {
+            return Ok(out);
+        }
+    }
+
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).map_err(AppError::Io)?;
+        if n == 0 {
+            break;
+        }
         parse_jsonl_line(&line, path, &mut out, &mut seen_hashes);
     }
     Ok(out)
+}
+
+fn should_discard_partial_line(path: &Path, start_offset: u64) -> AppResult<bool> {
+    if start_offset == 0 {
+        return Ok(false);
+    }
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => return Err(AppError::Io(e)),
+    };
+    let prev = start_offset.saturating_sub(1);
+    file.seek(SeekFrom::Start(prev)).map_err(AppError::Io)?;
+    let mut buf = [0u8; 1];
+    let n = file.read(&mut buf).map_err(AppError::Io)?;
+    if n == 0 {
+        return Ok(false);
+    }
+    Ok(buf[0] != b'\n' && buf[0] != b'\r')
 }
 
 fn parse_jsonl_line(
@@ -238,34 +393,98 @@ fn post_process_events(events: &mut [UsageEvent], settings: &ScanSettings) {
     }
 }
 
-fn flush_batch(
-    batch: &mut Vec<UsageEvent>,
+fn process_file(
+    path: &Path,
     source_id: i64,
     result: &mut ScanResult,
+    scan_settings: &ScanSettings,
+    state: &mut ScanState,
 ) -> AppResult<()> {
-    if batch.is_empty() {
+    let Some(plan) = build_file_plan(path, state)? else {
         return Ok(());
-    }
-    let batch_len = batch.len() as i64;
-    let inserted = persist_events(batch, source_id)?;
-    result.events_inserted += inserted;
-    result.events_skipped_duplicate += batch_len - inserted;
-    batch.clear();
-    Ok(())
+    };
+    let events = parse_file(&plan.path, plan.start_offset)?;
+    persist_planned_file(&plan, source_id, result, scan_settings, state, events)
 }
 
-fn push_into_batch(
-    batch: &mut Vec<UsageEvent>,
-    mut events: Vec<UsageEvent>,
+fn persist_planned_file(
+    plan: &FilePlan,
     source_id: i64,
     result: &mut ScanResult,
+    scan_settings: &ScanSettings,
+    state: &mut ScanState,
+    events: Vec<UsageEvent>,
 ) -> AppResult<()> {
-    for ev in events.drain(..) {
-        batch.push(ev);
-        if batch.len() >= PERSIST_BATCH_SIZE {
-            flush_batch(batch, source_id, result)?;
-        }
+    result.files_scanned += 1;
+
+    if events.is_empty() {
+        db::with_conn_mut(|conn| {
+            db::upsert_file_offset(
+                conn,
+                source_id,
+                &plan.key,
+                plan.byte_size,
+                plan.file_mtime,
+            )
+        })?;
+        state.file_offsets.insert(
+            plan.key.clone(),
+            db::FileOffsetState {
+                byte_offset: plan.byte_size,
+                file_mtime: plan.file_mtime,
+            },
+        );
+        return Ok(());
     }
+
+    let original_count = events.len() as i64;
+    let mut events = filter_known_events(events, &mut state.known_hashes);
+    let filtered_count = events.len() as i64;
+    let skipped_duplicates = original_count - filtered_count;
+
+    if events.is_empty() {
+        result.events_skipped_duplicate += skipped_duplicates;
+        db::with_conn_mut(|conn| {
+            db::upsert_file_offset(
+                conn,
+                source_id,
+                &plan.key,
+                plan.byte_size,
+                plan.file_mtime,
+            )
+        })?;
+        state.file_offsets.insert(
+            plan.key.clone(),
+            db::FileOffsetState {
+                byte_offset: plan.byte_size,
+                file_mtime: plan.file_mtime,
+            },
+        );
+        return Ok(());
+    }
+
+    post_process_events(&mut events, scan_settings);
+    let inserted = persist_events(&events, source_id)?;
+    result.events_inserted += inserted;
+    result.events_skipped_duplicate += skipped_duplicates + (filtered_count - inserted);
+
+    db::with_conn_mut(|conn| {
+        db::upsert_file_offset(
+            conn,
+            source_id,
+            &plan.key,
+            plan.byte_size,
+            plan.file_mtime,
+        )
+    })?;
+    state.file_offsets.insert(
+        plan.key.clone(),
+        db::FileOffsetState {
+            byte_offset: plan.byte_size,
+            file_mtime: plan.file_mtime,
+        },
+    );
+
     Ok(())
 }
 
@@ -280,38 +499,46 @@ pub fn scan_path(path: &Path, source_id: i64) -> AppResult<ScanResult> {
         store_raw: s.store_raw_json,
     };
 
+    let mut state = load_scan_state(source_id)?;
     let files = collect_scan_files(path);
     if files.is_empty() {
         result.duration_ms = start.elapsed().as_millis() as i64;
         return Ok(result);
     }
 
-    let mut batch: Vec<UsageEvent> = Vec::with_capacity(PERSIST_BATCH_SIZE);
-
-    for file_chunk in files.chunks(PARALLEL_FILE_CHUNK) {
-        let parsed: Vec<(PathBuf, AppResult<Vec<UsageEvent>>)> = file_chunk
-            .par_iter()
-            .map(|p| {
-                let parsed = parse_file(p);
-                (p.clone(), parsed)
-            })
-            .collect();
-
-        for (p, file_result) in parsed {
-            match file_result {
-                Ok(mut events) => {
-                    result.files_scanned += 1;
-                    post_process_events(&mut events, &scan_settings);
-                    push_into_batch(&mut batch, events, source_id, &mut result)?;
-                }
-                Err(e) => {
-                    result.errors.push(format!("{}: {}", p.display(), e));
-                }
-            }
+    let mut plans = Vec::new();
+    for p in files {
+        match build_file_plan(&p, &state) {
+            Ok(Some(plan)) => plans.push(plan),
+            Ok(None) => {}
+            Err(e) => result.errors.push(format!("{}: {}", p.display(), e)),
         }
     }
 
-    flush_batch(&mut batch, source_id, &mut result)?;
+    let parsed: Vec<(FilePlan, AppResult<Vec<UsageEvent>>)> = plans
+        .par_iter()
+        .map(|plan| (plan.clone(), parse_file(&plan.path, plan.start_offset)))
+        .collect();
+
+    for (plan, file_result) in parsed {
+        match file_result {
+            Ok(events) => {
+                if let Err(e) = persist_planned_file(
+                    &plan,
+                    source_id,
+                    &mut result,
+                    &scan_settings,
+                    &mut state,
+                    events,
+                ) {
+                    result.errors.push(format!("{}: {}", plan.path.display(), e));
+                }
+            }
+            Err(e) => {
+                result.errors.push(format!("{}: {}", plan.path.display(), e));
+            }
+        }
+    }
     result.duration_ms = start.elapsed().as_millis() as i64;
 
     let _ = db::with_conn_mut(|conn| {
@@ -571,13 +798,10 @@ pub fn parse_and_persist_file_sync(
         redact: s.redact_secrets,
         store_raw: s.store_raw_json,
     };
-    let mut events = parse_file(path)?;
-    if events.is_empty() {
-        return Ok(0);
-    }
-    post_process_events(&mut events, &scan_settings);
-    let inserted = persist_events(&events, source_id)?;
-    Ok(inserted as usize)
+    let mut result = ScanResult::default();
+    let mut state = load_scan_state(source_id)?;
+    process_file(path, source_id, &mut result, &scan_settings, &mut state)?;
+    Ok(result.events_inserted as usize)
 }
 
 /// Async wrapper for the watcher. Offloads sync SQLite work to a blocking thread.

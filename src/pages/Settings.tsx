@@ -5,6 +5,7 @@ import {
   cleanupRawEvents, vacuumDb, resetAllData, exportCsv, exportJson, backupDb,
   listPricing, upsertPricing, deletePricing, importPricingJson, exportPricing,
   listMissingPricing, recalculateCosts, recalculateTokenEstimates, syncPricingSeed, confirmDialog, isTauri,
+  getAppVersion,
   cursorStartLogin, cursorDisconnect, cursorGetStatus, cursorSyncNow, cursorConnectWithToken,
   scanInbox,
 } from "@/lib/tauri";
@@ -36,6 +37,7 @@ export function Settings() {
   const [cursorSyncing, setCursorSyncing] = useState(false);
   const [cursorTokenOpen, setCursorTokenOpen] = useState(false);
   const [cursorToken, setCursorToken] = useState("");
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [tab, setTab] = useState("sources");
   const [loadError, setLoadError] = useState<string | null>(null);
   const filter = useFilterObject();
@@ -74,6 +76,12 @@ export function Settings() {
   };
 
   useEffect(() => { reload().catch(() => {}); }, []);
+
+  useEffect(() => {
+    getAppVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+  }, []);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -547,7 +555,11 @@ export function Settings() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader title="Settings" description="Configure sources, pricing, privacy, and storage." />
+      <PageHeader
+        title="Settings"
+        description="Configure sources, pricing, privacy, and storage."
+        actions={appVersion ? <Badge variant="outline">v{appVersion}</Badge> : undefined}
+      />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>

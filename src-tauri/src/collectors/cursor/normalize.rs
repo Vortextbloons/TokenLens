@@ -510,4 +510,24 @@ mod tests {
         let b = normalize_api_event(&v, None).unwrap().event_hash;
         assert_eq!(a, b);
     }
+
+    #[test]
+    fn api_event_redacts_sensitive_fields_from_raw_json() {
+        let v = json!({
+            "timestamp": "1716845903438",
+            "model": "composer-2.5",
+            "kind": "USAGE_EVENT_KIND_USAGE_BASED",
+            "sessionToken": "secret-session-token",
+            "WorkosCursorSessionToken": "secret-workos-token",
+            "tokenUsage": { "inputTokens": 1, "outputTokens": 2 }
+        });
+
+        let ev = normalize_api_event(&v, None).unwrap();
+        let raw = ev.raw_json.expect("raw_json should be present");
+
+        assert!(!raw.contains("sessionToken"));
+        assert!(!raw.contains("WorkosCursorSessionToken"));
+        assert!(!raw.contains("secret-session-token"));
+        assert!(!raw.contains("secret-workos-token"));
+    }
 }

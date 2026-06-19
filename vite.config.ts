@@ -3,12 +3,20 @@ import react from "@vitejs/plugin-react";
 import compression from "vite-plugin-compression";
 import { visualizer } from "rollup-plugin-visualizer";
 import path from "node:path";
+import { readFileSync } from "node:fs";
+
+const packageJson = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8")
+) as { version: string };
 
 // Vite + React config for TokenLens (Tauri v2).
 // Note: Tauri expects a fixed dev port (1420) unless overridden.
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(packageJson.version),
+  },
   plugins: [
     react(),
     // Brotli (~70% size reduction) and gzip fallbacks. Tauri serves assets
