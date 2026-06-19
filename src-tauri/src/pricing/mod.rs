@@ -19,8 +19,23 @@ use std::sync::OnceLock;
 static CACHE: OnceLock<parking_lot::RwLock<HashMap<(String, String), ModelPricing>>> =
     OnceLock::new();
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ContextWindowFallback {
+    model: String,
+    context_window_tokens: i64,
+}
+
+static CONTEXT_WINDOW_FALLBACKS: OnceLock<Vec<ContextWindowFallback>> = OnceLock::new();
+
 fn cache() -> &'static parking_lot::RwLock<HashMap<(String, String), ModelPricing>> {
     CACHE.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
+}
+
+fn context_window_fallbacks() -> &'static [ContextWindowFallback] {
+    CONTEXT_WINDOW_FALLBACKS.get_or_init(|| {
+        let json = include_str!("../../../pricing/context-windows.json");
+        serde_json::from_str(json).expect("pricing context windows JSON should parse")
+    })
 }
 
 pub fn prime_cache() -> AppResult<()> {
@@ -28,9 +43,9 @@ pub fn prime_cache() -> AppResult<()> {
         let mut stmt = conn.prepare(
             "SELECT id, provider, model, input_price_per_million, output_price_per_million,
                     reasoning_price_per_million, cache_read_price_per_million,
-                    cache_write_price_per_million, currency, effective_date,
+                    cache_write_price_per_million, context_window_tokens, currency, effective_date,
                     is_local, source, updated_at
-             FROM model_pricing",
+              FROM model_pricing",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(ModelPricing {
@@ -42,11 +57,12 @@ pub fn prime_cache() -> AppResult<()> {
                 reasoning_price_per_million: r.get(5)?,
                 cache_read_price_per_million: r.get(6)?,
                 cache_write_price_per_million: r.get(7)?,
-                currency: r.get(8)?,
-                effective_date: r.get(9)?,
-                is_local: r.get::<_, i64>(10)? != 0,
-                source: r.get(11)?,
-                updated_at: r.get(12)?,
+                context_window_tokens: r.get(8)?,
+                currency: r.get(9)?,
+                effective_date: r.get(10)?,
+                is_local: r.get::<_, i64>(11)? != 0,
+                source: r.get(12)?,
+                updated_at: r.get(13)?,
             })
         })?;
         let mut m = HashMap::new();
@@ -210,6 +226,7 @@ fn cursor_composer_pricing(model: &str) -> Option<ModelPricing> {
         reasoning_price_per_million: 0.0,
         cache_read_price_per_million: cr,
         cache_write_price_per_million: cw,
+        context_window_tokens: None,
         currency: "USD".into(),
         effective_date: None,
         is_local: false,
@@ -284,7 +301,7 @@ pub fn upsert(p: &ModelPricing) -> AppResult<i64> {
             .query_row(
                 "SELECT id, provider, model, input_price_per_million, output_price_per_million,
                         reasoning_price_per_million, cache_read_price_per_million,
-                        cache_write_price_per_million, currency, effective_date,
+                        cache_write_price_per_million, context_window_tokens, currency, effective_date,
                         is_local, source, updated_at
                  FROM model_pricing WHERE provider = ?1 AND model = ?2",
                 params![p.provider, p.model],
@@ -298,11 +315,12 @@ pub fn upsert(p: &ModelPricing) -> AppResult<i64> {
                         reasoning_price_per_million: r.get(5)?,
                         cache_read_price_per_million: r.get(6)?,
                         cache_write_price_per_million: r.get(7)?,
-                        currency: r.get(8)?,
-                        effective_date: r.get(9)?,
-                        is_local: r.get::<_, i64>(10)? != 0,
-                        source: r.get(11)?,
-                        updated_at: r.get(12)?,
+                        context_window_tokens: r.get(8)?,
+                        currency: r.get(9)?,
+                        effective_date: r.get(10)?,
+                        is_local: r.get::<_, i64>(11)? != 0,
+                        source: r.get(12)?,
+                        updated_at: r.get(13)?,
                     })
                 },
             )
@@ -331,23 +349,24 @@ pub fn upsert(p: &ModelPricing) -> AppResult<i64> {
 
         let is_local_i = if p.is_local { 1 } else { 0 };
         conn.execute(
-            "INSERT INTO model_pricing
-               (provider, model, input_price_per_million, output_price_per_million,
-                reasoning_price_per_million, cache_read_price_per_million,
-                cache_write_price_per_million, currency, effective_date,
-                is_local, source, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             ON CONFLICT(provider, model) DO UPDATE SET
-               input_price_per_million=excluded.input_price_per_million,
-               output_price_per_million=excluded.output_price_per_million,
-               reasoning_price_per_million=excluded.reasoning_price_per_million,
-               cache_read_price_per_million=excluded.cache_read_price_per_million,
-               cache_write_price_per_million=excluded.cache_write_price_per_million,
-               currency=excluded.currency,
-               effective_date=excluded.effective_date,
-               is_local=excluded.is_local,
-               source=excluded.source,
-               updated_at=excluded.updated_at",
+                "INSERT INTO model_pricing
+                (provider, model, input_price_per_million, output_price_per_million,
+                 reasoning_price_per_million, cache_read_price_per_million,
+                 cache_write_price_per_million, context_window_tokens, currency, effective_date,
+                 is_local, source, updated_at)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+              ON CONFLICT(provider, model) DO UPDATE SET
+                input_price_per_million=excluded.input_price_per_million,
+                output_price_per_million=excluded.output_price_per_million,
+                reasoning_price_per_million=excluded.reasoning_price_per_million,
+                cache_read_price_per_million=excluded.cache_read_price_per_million,
+                cache_write_price_per_million=excluded.cache_write_price_per_million,
+                context_window_tokens=excluded.context_window_tokens,
+                currency=excluded.currency,
+                effective_date=excluded.effective_date,
+                is_local=excluded.is_local,
+                source=excluded.source,
+                updated_at=excluded.updated_at",
             params![
                 p.provider,
                 p.model,
@@ -356,6 +375,7 @@ pub fn upsert(p: &ModelPricing) -> AppResult<i64> {
                 p.reasoning_price_per_million,
                 p.cache_read_price_per_million,
                 p.cache_write_price_per_million,
+                p.context_window_tokens,
                 p.currency,
                 p.effective_date,
                 is_local_i,
@@ -441,12 +461,26 @@ fn average_pricing(provider: &str, model: &str, rows: &[&ModelPricing]) -> Model
         reasoning_price_per_million: sum(|r| r.reasoning_price_per_million),
         cache_read_price_per_million: sum(|r| r.cache_read_price_per_million),
         cache_write_price_per_million: sum(|r| r.cache_write_price_per_million),
+        context_window_tokens: None,
         currency: rows[0].currency.clone(),
         effective_date: None,
         is_local: false,
         source: "estimate".into(),
         updated_at: String::new(),
     }
+}
+
+/// Context window limit for a provider/model, with a few local fallbacks.
+pub fn context_window_tokens(provider: &str, model: &str) -> Option<i64> {
+    if let Some(p) = resolve(provider, model) {
+        if p.context_window_tokens.is_some() {
+            return p.context_window_tokens;
+        }
+    }
+    let m = model.to_lowercase();
+    context_window_fallbacks()
+        .iter()
+        .find_map(|row| if m.starts_with(&row.model) { Some(row.context_window_tokens) } else { None })
 }
 
 fn missing_price_behavior() -> String {
@@ -921,6 +955,7 @@ mod tests {
             reasoning_price_per_million: 0.0,
             cache_read_price_per_million: 1.25,
             cache_write_price_per_million: 0.0,
+            context_window_tokens: None,
             currency: "USD".into(),
             effective_date: None,
             is_local: false,
@@ -943,6 +978,7 @@ mod tests {
             reasoning_price_per_million: 12.0,
             cache_read_price_per_million: 0.0,
             cache_write_price_per_million: 0.0,
+            context_window_tokens: None,
             currency: "USD".into(),
             effective_date: None,
             is_local: false,
@@ -965,6 +1001,7 @@ mod tests {
             reasoning_price_per_million: 0.0,
             cache_read_price_per_million: 0.0028,
             cache_write_price_per_million: 0.0,
+            context_window_tokens: None,
             currency: "USD".into(),
             effective_date: None,
             is_local: false,
@@ -987,6 +1024,7 @@ mod tests {
             reasoning_price_per_million: 0.0,
             cache_read_price_per_million: 0.0,
             cache_write_price_per_million: 0.0,
+            context_window_tokens: None,
             currency: "USD".into(),
             effective_date: None,
             is_local: false,
@@ -1014,6 +1052,7 @@ mod tests {
             reasoning_price_per_million: 0.0,
             cache_read_price_per_million: 0.07,
             cache_write_price_per_million: 0.0,
+            context_window_tokens: None,
             currency: "USD".into(),
             effective_date: None,
             is_local: false,

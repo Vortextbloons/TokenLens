@@ -8,8 +8,9 @@ use crate::ingest;
 use crate::pricing;
 use crate::settings::{self, AppSettings};
 use crate::types::{
-    Breakdown, ModelPricing, OverviewStats, QueryFilter, ScanResult, Session, Source,
-    TimeseriesPoint, UsageEvent,
+    AnomalyHighlight, Breakdown, CacheEfficiencyReport, ContextUtilizationReport, ModelPricing,
+    OverviewStats, QueryFilter, ScanResult, Session, SessionSwapQuote, Source, TimeseriesPoint,
+    UsageEvent,
 };
 use crate::watcher;
 use chrono::Utc;
@@ -271,8 +272,86 @@ pub fn get_session_events(id: i64) -> AppResult<Vec<UsageEvent>> {
 }
 
 #[tauri::command]
+pub fn simulate_session_swap(
+    session_id: i64,
+    target_provider: String,
+    target_model: String,
+) -> AppResult<Option<SessionSwapQuote>> {
+    let session = aggregation::session_detail(session_id)?;
+    let Some(session) = session else {
+        return Ok(None);
+    };
+    let events = aggregation::session_events(session_id)?;
+    let mut simulated_cost = 0.0;
+    let mut target_status = crate::pricing::CostStatus::Priced;
+    for e in &events {
+        let breakdown = crate::pricing::compute_cost_breakdown(
+            &target_provider,
+            &target_model,
+            e.input_tokens,
+            e.output_tokens,
+            e.reasoning_tokens,
+            e.cache_read_tokens,
+            e.cache_write_tokens,
+        );
+        simulated_cost += breakdown.cost_usd;
+        target_status = match (target_status, breakdown.status) {
+            (crate::pricing::CostStatus::Unpriced, _) | (_, crate::pricing::CostStatus::Unpriced) => {
+                crate::pricing::CostStatus::Unpriced
+            }
+            (crate::pricing::CostStatus::Estimated, _) | (_, crate::pricing::CostStatus::Estimated) => {
+                crate::pricing::CostStatus::Estimated
+            }
+            _ => crate::pricing::CostStatus::Priced,
+        };
+    }
+    let current_cost = session.total_cost_usd;
+    let delta = simulated_cost - current_cost;
+    let delta_pct = if current_cost.abs() > f64::EPSILON {
+        (delta / current_cost) * 100.0
+    } else {
+        0.0
+    };
+    let target_context_window_tokens = crate::pricing::context_window_tokens(&target_provider, &target_model);
+    Ok(Some(SessionSwapQuote {
+        session_id,
+        current_provider: session.provider,
+        current_model: session.model,
+        target_provider,
+        target_model,
+        current_cost_usd: current_cost,
+        simulated_cost_usd: simulated_cost,
+        delta_usd: delta,
+        delta_pct,
+        target_context_window_tokens,
+        target_pricing_status: match target_status {
+            crate::pricing::CostStatus::Priced => "priced",
+            crate::pricing::CostStatus::Estimated => "estimated",
+            crate::pricing::CostStatus::Unpriced => "unpriced",
+        }
+        .to_string(),
+        events_count: events.len() as i64,
+    }))
+}
+
+#[tauri::command]
 pub fn get_breakdown(filter: QueryFilter, dimension: String) -> AppResult<Vec<Breakdown>> {
     aggregation::breakdown_by(&filter, &dimension)
+}
+
+#[tauri::command]
+pub fn get_anomaly_highlights(filter: QueryFilter) -> AppResult<Vec<AnomalyHighlight>> {
+    aggregation::anomaly_highlights(&filter)
+}
+
+#[tauri::command]
+pub fn get_cache_efficiency(filter: QueryFilter) -> AppResult<CacheEfficiencyReport> {
+    aggregation::cache_efficiency(&filter)
+}
+
+#[tauri::command]
+pub fn get_context_utilization(filter: QueryFilter) -> AppResult<ContextUtilizationReport> {
+    aggregation::context_utilization(&filter)
 }
 
 #[tauri::command]

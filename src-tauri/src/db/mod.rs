@@ -19,6 +19,7 @@ const MIGRATION_001: &str = include_str!("../../migrations/001_init.sql");
 const MIGRATION_002: &str = include_str!("../../migrations/002_cursor_credentials.sql");
 const MIGRATION_003: &str = include_str!("../../migrations/003_compress_raw_json.sql");
 const MIGRATION_004: &str = include_str!("../../migrations/004_file_offsets_mtime.sql");
+const MIGRATION_005: &str = include_str!("../../migrations/005_context_window_tokens.sql");
 
 struct EmbeddedMigration {
     version: i64,
@@ -46,6 +47,11 @@ const EMBEDDED_MIGRATIONS: &[EmbeddedMigration] = &[
         version: 4,
         name: "004_file_offsets_mtime.sql",
         sql: MIGRATION_004,
+    },
+    EmbeddedMigration {
+        version: 5,
+        name: "005_context_window_tokens.sql",
+        sql: MIGRATION_005,
     },
 ];
 
@@ -118,7 +124,7 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
         );",
     )?;
 
-    let current: i64 = conn.query_row(
+    let mut current: i64 = conn.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM schema_version",
         [],
         |r| r.get(0),
@@ -158,6 +164,21 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
         if version <= current {
             continue;
         }
+
+        // Migration 005 may have been partially applied before the schema
+        // version row was written. In that case the column already exists,
+        // so replaying the ALTER TABLE would fail with a duplicate-column
+        // error. Detect that state and just record the version.
+        if version == 5 && column_exists(conn, "model_pricing", "context_window_tokens")? {
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (5, datetime('now'))",
+                [],
+            )?;
+            current = version;
+            info!("Migration 005 already present; recorded schema version 5");
+            continue;
+        }
+
         let sql = match std::fs::read_to_string(entry.path()) {
             Ok(s) => s,
             Err(e) => {
@@ -171,10 +192,34 @@ fn run_migrations(conn: &Connection) -> AppResult<()> {
                 .to_string()
             }
         };
-        conn.execute_batch(&sql)?;
+        if let Err(e) = conn.execute_batch(&sql) {
+            if version == 5 && e.to_string().contains("duplicate column name: context_window_tokens") {
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (5, datetime('now'))",
+                    [],
+                )?;
+                current = version;
+                warn!("Migration 005 replay hit duplicate column; recorded schema version 5");
+                continue;
+            }
+            return Err(e.into());
+        }
         info!("Applied migration {}", name_str);
+        current = version;
     }
     Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> AppResult<bool> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for row in rows {
+        if row? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Backfill: compress any existing `raw_json` TEXT rows into `raw_json_zstd`

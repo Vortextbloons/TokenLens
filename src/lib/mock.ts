@@ -3,13 +3,20 @@
 
 import type {
   AppSettings,
+  AnomalyHighlight,
   Breakdown,
+  CacheEfficiencyReport,
+  CacheEfficiencyRow,
   CursorConnectionStatus,
+  ContextUtilizationPoint,
+  ContextUtilizationReport,
+  ContextUtilizationRow,
   ModelPricing,
   OverviewStats,
   QueryFilter,
   ScanResult,
   Session,
+  SessionSwapQuote,
   Source,
   TimeseriesPoint,
   UsageEvent,
@@ -17,6 +24,8 @@ import type {
 import {
   cacheSavingsForEvent,
   computeEventCost,
+  quoteSessionSwap,
+  resolveContextWindow,
   isResolved,
 } from "@/lib/cost";
 import { localDateString } from "@/lib/utils";
@@ -90,70 +99,70 @@ const PRICING: ModelPricing[] = [
     id: 1, provider: "openai", model: "gpt-5.5",
     input_price_per_million: 5.0, output_price_per_million: 30.0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0.50,
-    cache_write_price_per_million: 5.0, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 5.0, context_window_tokens: 400000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
     id: 2, provider: "openai", model: "gpt-5.4",
     input_price_per_million: 2.5, output_price_per_million: 15.0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0.25,
-    cache_write_price_per_million: 2.5, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 2.5, context_window_tokens: 400000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
     id: 3, provider: "openai", model: "gpt-5.4-mini",
     input_price_per_million: 0.75, output_price_per_million: 4.5,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0.075,
-    cache_write_price_per_million: 0.75, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 0.75, context_window_tokens: 128000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
     id: 4, provider: "anthropic", model: "claude-fable-5",
     input_price_per_million: 10.0, output_price_per_million: 50.0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 1.0,
-    cache_write_price_per_million: 12.5, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 12.5, context_window_tokens: 200000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
     id: 5, provider: "anthropic", model: "claude-opus-4.8",
     input_price_per_million: 5.0, output_price_per_million: 25.0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0.50,
-    cache_write_price_per_million: 6.25, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 6.25, context_window_tokens: 200000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
     id: 6, provider: "anthropic", model: "claude-sonnet-4.6",
     input_price_per_million: 3.0, output_price_per_million: 15.0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0.30,
-    cache_write_price_per_million: 3.75, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 3.75, context_window_tokens: 200000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
     id: 7, provider: "anthropic", model: "claude-haiku-4.5",
     input_price_per_million: 1.0, output_price_per_million: 5.0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0.10,
-    cache_write_price_per_million: 1.25, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 1.25, context_window_tokens: 200000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
     id: 8, provider: "google", model: "gemini-3.1-pro-preview",
     input_price_per_million: 2.0, output_price_per_million: 12.0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0.20,
-    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 0, context_window_tokens: 1000000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
     id: 9, provider: "google", model: "gemini-3.5-flash",
     input_price_per_million: 1.5, output_price_per_million: 9.0,
     reasoning_price_per_million: 0, cache_read_price_per_million: 0.15,
-    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 0, context_window_tokens: 1000000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
   {
     id: 10, provider: "openai", model: "o4-mini",
     input_price_per_million: 1.1, output_price_per_million: 4.4,
     reasoning_price_per_million: 4.4, cache_read_price_per_million: 0.275,
-    cache_write_price_per_million: 0, currency: "USD", effective_date: null,
+    cache_write_price_per_million: 0, context_window_tokens: 128000, currency: "USD", effective_date: null,
     is_local: false, source: "seed", updated_at: ago(7),
   },
 ];
@@ -377,12 +386,13 @@ function timeseriesFor(filter: QueryFilter): TimeseriesPoint[] {
     const d = e.timestamp.slice(0, 10);
     const p = (map[d] ??= {
       date: d, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0,
-      cache_read_tokens: 0, total_tokens: 0, cost_usd: 0,
+      cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 0, cost_usd: 0,
     });
     p.input_tokens += e.input_tokens;
     p.output_tokens += e.output_tokens;
     p.reasoning_tokens += e.reasoning_tokens;
     p.cache_read_tokens += e.cache_read_tokens;
+    p.cache_write_tokens += e.cache_write_tokens;
     p.total_tokens += e.total_tokens;
     p.cost_usd += e.cost_usd;
   }
@@ -454,6 +464,99 @@ function sessionsForFilter(filter: QueryFilter): Session[] {
   );
 }
 
+type SessionAgg = {
+  session_id: number;
+  label: string;
+  provider: string | null;
+  model: string | null;
+  last_seen_at: string | null;
+  total_tokens: number;
+  cost_usd: number;
+  event_count: number;
+  model_switches: number;
+  peak_context_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+};
+
+type DailyAgg = {
+  date: string;
+  total_tokens: number;
+  cost_usd: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  session_count: number;
+  event_count: number;
+  model_count: number;
+};
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+function sessionAggregatesFor(filter: QueryFilter): SessionAgg[] {
+  const filtered = EVENTS.filter((e) => matchFilter(filter, e) && e.session_id != null);
+  const bySession = new Map<number, SessionAgg>();
+  for (const e of filtered) {
+    const sid = e.session_id!;
+    const current = bySession.get(sid) ?? {
+      session_id: sid,
+      label: SESSIONS.find((s) => s.id === sid)?.title ?? SESSIONS.find((s) => s.id === sid)?.source_session_id ?? `sess-${sid}`,
+      provider: e.provider,
+      model: e.model,
+      last_seen_at: e.timestamp,
+      total_tokens: 0,
+      cost_usd: 0,
+      event_count: 0,
+      model_switches: 0,
+      peak_context_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+    };
+    current.provider = e.provider ?? current.provider;
+    current.model = e.model ?? current.model;
+    if (!current.last_seen_at || e.timestamp > current.last_seen_at) current.last_seen_at = e.timestamp;
+    current.total_tokens += e.total_tokens;
+    current.cost_usd += e.cost_usd;
+    current.event_count += 1;
+    current.peak_context_tokens = Math.max(current.peak_context_tokens, e.input_tokens + e.cache_read_tokens + e.tool_tokens);
+    current.cache_read_tokens += e.cache_read_tokens;
+    current.cache_write_tokens += e.cache_write_tokens;
+    bySession.set(sid, current);
+  }
+  return [...bySession.values()].sort((a, b) => (a.last_seen_at ?? "").localeCompare(b.last_seen_at ?? ""));
+}
+
+function dailyAggregatesFor(filter: QueryFilter): DailyAgg[] {
+  const filtered = EVENTS.filter((e) => matchFilter(filter, e));
+  const byDay = new Map<string, DailyAgg>();
+  for (const e of filtered) {
+    const date = e.timestamp.slice(0, 10);
+    const current = byDay.get(date) ?? {
+      date,
+      total_tokens: 0,
+      cost_usd: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      session_count: 0,
+      event_count: 0,
+      model_count: 0,
+    };
+    current.total_tokens += e.total_tokens;
+    current.cost_usd += e.cost_usd;
+    current.cache_read_tokens += e.cache_read_tokens;
+    current.cache_write_tokens += e.cache_write_tokens;
+    current.event_count += 1;
+    current.session_count = new Set(filtered.filter((x) => x.timestamp.slice(0, 10) === date).map((x) => x.session_id).filter((x) => x != null)).size;
+    current.model_count = new Set(filtered.filter((x) => x.timestamp.slice(0, 10) === date).map((x) => x.model).filter((x) => x != null)).size;
+    byDay.set(date, current);
+  }
+  return [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
 export const MOCK_BACKEND: Record<string, (args: any) => any> = {
   get_settings: () => SETTINGS,
   update_settings: ({ s }: { s: AppSettings }) => Object.assign(SETTINGS, s),
@@ -510,8 +613,202 @@ export const MOCK_BACKEND: Record<string, (args: any) => any> = {
     if (!s) return [];
     return EVENTS.filter((e) => e.session_id === id).slice(0, 50);
   },
+  simulate_session_swap: ({ session_id, target_provider, target_model }: { session_id: number; target_provider: string; target_model: string }) => {
+    const events = EVENTS.filter((e) => e.session_id === session_id);
+    if (!events.length) return null;
+    const base = SESSIONS.find((s) => s.id === session_id);
+    const { simulated_cost_usd, target_pricing_status } = quoteSessionSwap(events, target_provider, target_model, PRICING);
+    const current_cost_usd = events.reduce((a, e) => a + e.cost_usd, 0);
+    return {
+      session_id,
+      current_provider: base?.provider ?? events[0]?.provider ?? null,
+      current_model: base?.model ?? events[0]?.model ?? null,
+      target_provider,
+      target_model,
+      current_cost_usd,
+      simulated_cost_usd,
+      delta_usd: simulated_cost_usd - current_cost_usd,
+      delta_pct: current_cost_usd > 0 ? ((simulated_cost_usd - current_cost_usd) / current_cost_usd) * 100 : 0,
+      target_context_window_tokens: resolveContextWindow(target_provider, target_model, PRICING),
+      target_pricing_status,
+      events_count: events.length,
+    } satisfies SessionSwapQuote;
+  },
   get_breakdown: ({ filter, dimension }: { filter: QueryFilter; dimension: string }) =>
     breakdownFor(filter ?? {}, dimension),
+  get_anomaly_highlights: ({ filter }: { filter: QueryFilter }) => {
+    const sessions = sessionAggregatesFor(filter ?? {});
+    const days = dailyAggregatesFor(filter ?? {});
+    const out: AnomalyHighlight[] = [];
+    const window = 7;
+    for (let i = window; i < sessions.length; i++) {
+      const baseline = median(sessions.slice(i - window, i).map((s) => s.total_tokens));
+      if (baseline <= 0) continue;
+      const s = sessions[i];
+      const ratio = s.total_tokens / baseline;
+      if (ratio < 2) continue;
+      const peak = resolveContextWindow(s.provider ?? "", s.model ?? "", PRICING);
+      const peak_pct = peak ? (s.peak_context_tokens / peak) * 100 : 0;
+      const reason = s.model_switches > 1
+        ? "model switching"
+        : peak_pct >= 80
+          ? "context saturation"
+          : s.cache_write_tokens > s.cache_read_tokens && s.cache_write_tokens > 0
+            ? "cache rebuilds"
+            : s.event_count >= 10
+              ? "retry-heavy"
+              : "volume spike";
+      out.push({
+        kind: "session",
+        label: s.label,
+        session_id: s.session_id,
+        date: s.last_seen_at?.slice(0, 10) ?? null,
+        provider: s.provider,
+        model: s.model,
+        total_tokens: s.total_tokens,
+        baseline_tokens: Math.round(baseline),
+        ratio,
+        event_count: s.event_count,
+        model_switches: s.model_switches,
+        peak_context_tokens: s.peak_context_tokens,
+        peak_context_pct: peak_pct,
+        cache_read_tokens: s.cache_read_tokens,
+        cache_write_tokens: s.cache_write_tokens,
+        cost_usd: s.cost_usd,
+        reason,
+      });
+    }
+    for (let i = window; i < days.length; i++) {
+      const baseline = median(days.slice(i - window, i).map((d) => d.total_tokens));
+      if (baseline <= 0) continue;
+      const d = days[i];
+      const ratio = d.total_tokens / baseline;
+      if (ratio < 2) continue;
+      const reason = d.cache_write_tokens > d.cache_read_tokens && d.cache_write_tokens > 0
+        ? "cache churn"
+        : d.session_count >= 10
+          ? "session surge"
+          : d.model_count > 1
+            ? "model switching"
+            : "volume spike";
+      out.push({
+        kind: "day",
+        label: d.date,
+        session_id: null,
+        date: d.date,
+        provider: null,
+        model: null,
+        total_tokens: d.total_tokens,
+        baseline_tokens: Math.round(baseline),
+        ratio,
+        event_count: d.event_count,
+        model_switches: d.model_count,
+        peak_context_tokens: 0,
+        peak_context_pct: 0,
+        cache_read_tokens: d.cache_read_tokens,
+        cache_write_tokens: d.cache_write_tokens,
+        cost_usd: d.cost_usd,
+        reason,
+      });
+    }
+    return out.sort((a, b) => b.ratio - a.ratio).slice(0, 12);
+  },
+  get_cache_efficiency: ({ filter }: { filter: QueryFilter }) => {
+    const filtered = EVENTS.filter((e) => matchFilter(filter, e));
+    const seriesMap = new Map<string, { cache_read_tokens: number; cache_write_tokens: number; cache_savings_usd: number }>();
+    const providerMap = new Map<string, CacheEfficiencyRow>();
+    const modelMap = new Map<string, CacheEfficiencyRow>();
+    const group = new Map<string, { date: string; provider: string; model: string; cache_read_tokens: number; cache_write_tokens: number; total_tokens: number; cost_usd: number; sessions: Set<number | null> }>();
+    for (const e of filtered) {
+      const date = e.timestamp.slice(0, 10);
+      const provider = e.provider ?? "(none)";
+      const model = e.model ?? "(none)";
+      const k = `${date}::${provider}::${model}`;
+      const g = (group.get(k) ?? { date, provider, model, cache_read_tokens: 0, cache_write_tokens: 0, total_tokens: 0, cost_usd: 0, sessions: new Set() });
+      g.cache_read_tokens += e.cache_read_tokens;
+      g.cache_write_tokens += e.cache_write_tokens;
+      g.total_tokens += e.total_tokens;
+      g.cost_usd += e.cost_usd;
+      g.sessions.add(e.session_id);
+      group.set(k, g);
+    }
+    for (const g of group.values()) {
+      const savings = cacheSavingsForEvent(g.provider, g.model, g.cache_read_tokens, PRICING);
+      const series = seriesMap.get(g.date) ?? { cache_read_tokens: 0, cache_write_tokens: 0, cache_savings_usd: 0 };
+      series.cache_read_tokens += g.cache_read_tokens;
+      series.cache_write_tokens += g.cache_write_tokens;
+      series.cache_savings_usd += savings;
+      seriesMap.set(g.date, series);
+
+      const prow = providerMap.get(g.provider) ?? {
+        key: g.provider, cache_read_tokens: 0, cache_write_tokens: 0, cache_savings_usd: 0,
+        total_tokens: 0, cost_usd: 0, sessions_count: 0,
+      };
+      prow.cache_read_tokens += g.cache_read_tokens;
+      prow.cache_write_tokens += g.cache_write_tokens;
+      prow.cache_savings_usd += savings;
+      prow.total_tokens += g.total_tokens;
+      prow.cost_usd += g.cost_usd;
+      prow.sessions_count += g.sessions.size;
+      providerMap.set(g.provider, prow);
+
+      const mrow = modelMap.get(g.model) ?? {
+        key: g.model, cache_read_tokens: 0, cache_write_tokens: 0, cache_savings_usd: 0,
+        total_tokens: 0, cost_usd: 0, sessions_count: 0,
+      };
+      mrow.cache_read_tokens += g.cache_read_tokens;
+      mrow.cache_write_tokens += g.cache_write_tokens;
+      mrow.cache_savings_usd += savings;
+      mrow.total_tokens += g.total_tokens;
+      mrow.cost_usd += g.cost_usd;
+      mrow.sessions_count += g.sessions.size;
+      modelMap.set(g.model, mrow);
+    }
+    return {
+      series: [...seriesMap.entries()].map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date)),
+      by_provider: [...providerMap.values()].sort((a, b) => b.cache_savings_usd - a.cache_savings_usd),
+      by_model: [...modelMap.values()].sort((a, b) => b.cache_savings_usd - a.cache_savings_usd),
+    } satisfies CacheEfficiencyReport;
+  },
+  get_context_utilization: ({ filter }: { filter: QueryFilter }) => {
+    const sessions = sessionAggregatesFor(filter ?? {});
+    const rows: ContextUtilizationRow[] = sessions
+      .map((s) => {
+        const limit = resolveContextWindow(s.provider ?? "", s.model ?? "", PRICING);
+        return {
+          session_id: s.session_id,
+          label: s.label,
+          provider: s.provider,
+          model: s.model,
+          last_seen_at: s.last_seen_at,
+          peak_context_tokens: s.peak_context_tokens,
+          context_window_tokens: limit,
+          utilization_pct: limit ? (s.peak_context_tokens / limit) * 100 : 0,
+          event_count: s.event_count,
+          model_switches: s.model_switches,
+          cost_usd: s.cost_usd,
+        };
+      })
+      .sort((a, b) => b.utilization_pct - a.utilization_pct)
+      .slice(0, 100);
+    const buckets = new Map<string, { vals: number[]; over80: number }>();
+    for (const row of rows) {
+      const date = row.last_seen_at?.slice(0, 10) ?? "unknown";
+      const bucket = buckets.get(date) ?? { vals: [], over80: 0 };
+      if (row.context_window_tokens) {
+        bucket.vals.push(row.utilization_pct);
+        if (row.utilization_pct >= 80) bucket.over80 += 1;
+      }
+      buckets.set(date, bucket);
+    }
+    const trend: ContextUtilizationPoint[] = [...buckets.entries()].map(([date, bucket]) => ({
+      date,
+      avg_utilization_pct: bucket.vals.length ? bucket.vals.reduce((a, b) => a + b, 0) / bucket.vals.length : 0,
+      max_utilization_pct: bucket.vals.length ? Math.max(...bucket.vals) : 0,
+      sessions_over_80: bucket.over80,
+    })).sort((a, b) => a.date.localeCompare(b.date));
+    return { sessions: rows, trend } satisfies ContextUtilizationReport;
+  },
   list_events: ({ filter }: { filter: QueryFilter }) =>
     EVENTS.filter((e) => matchFilter(filter, e)).slice(0, filter?.limit ?? 200),
   count_events: () => EVENTS.length,

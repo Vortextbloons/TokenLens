@@ -10,6 +10,7 @@ import {
   ListTree,
   Settings,
   Activity,
+  TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +19,7 @@ const items = [
   { to: "/sessions", label: "Sessions", icon: MessagesSquare },
   { to: "/projects", label: "Projects", icon: FolderKanban },
   { to: "/models", label: "Models", icon: Cpu },
+  { to: "/insights", label: "Insights", icon: TrendingUp },
   { to: "/providers", label: "Providers", icon: Plug },
   { to: "/costs", label: "Costs", icon: DollarSign },
   { to: "/timeline", label: "Timeline", icon: Clock },

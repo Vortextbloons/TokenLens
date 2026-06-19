@@ -6,9 +6,12 @@ use crate::db;
 use crate::errors::AppResult;
 use crate::pricing;
 use crate::types::{
-    Breakdown, ExactnessMix, OverviewStats, QueryFilter, Session, TimeseriesPoint,
+    AnomalyHighlight, Breakdown, CacheEfficiencyPoint, CacheEfficiencyReport, CacheEfficiencyRow,
+    ContextUtilizationPoint, ContextUtilizationReport, ContextUtilizationRow, ExactnessMix,
+    OverviewStats, QueryFilter, Session, TimeseriesPoint,
 };
 use rusqlite::{params, OptionalExtension};
+use std::collections::{HashMap, HashSet};
 
 fn col(prefix: &str, name: &str) -> String {
     if prefix.is_empty() {
@@ -135,6 +138,154 @@ fn build_dimension_where(f: &QueryFilter) -> (String, Vec<rusqlite::types::Value
 /// Event-table filter with alias prefix (e.g. `e` for joins).
 fn build_event_where(f: &QueryFilter) -> (String, Vec<rusqlite::types::Value>) {
     build_where_clauses(f, true, "e")
+}
+
+#[derive(Debug, Clone)]
+struct SessionAggregate {
+    session_id: i64,
+    label: String,
+    provider: Option<String>,
+    model: Option<String>,
+    last_seen_at: Option<String>,
+    total_tokens: i64,
+    cost_usd: f64,
+    event_count: i64,
+    model_switches: i64,
+    peak_context_tokens: i64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+}
+
+#[derive(Debug, Clone)]
+struct DailyAggregate {
+    date: String,
+    total_tokens: i64,
+    cost_usd: f64,
+    cache_read_tokens: i64,
+    cache_write_tokens: i64,
+    session_count: i64,
+    event_count: i64,
+    model_count: i64,
+}
+
+fn session_label(title: Option<String>, source_session_id: String) -> String {
+    title.unwrap_or(source_session_id)
+}
+
+fn rolling_median(values: &[i64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted: Vec<f64> = values.iter().map(|v| *v as f64).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 0 {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    }
+}
+
+fn context_pct(peak_context_tokens: i64, context_window_tokens: Option<i64>) -> f64 {
+    match context_window_tokens.filter(|v| *v > 0) {
+        Some(limit) => (peak_context_tokens.max(0) as f64 / limit as f64) * 100.0,
+        None => 0.0,
+    }
+}
+
+fn cache_savings_for(provider: Option<&str>, model: Option<&str>, cache_read_tokens: i64) -> f64 {
+    let (Some(provider), Some(model)) = (provider, model) else {
+        return 0.0;
+    };
+    let Some(p) = pricing::resolve(provider, model) else {
+        return 0.0;
+    };
+    let delta = (p.input_price_per_million - p.cache_read_price_per_million).max(0.0);
+    (cache_read_tokens.max(0) as f64) * delta / 1_000_000.0
+}
+
+fn load_session_aggregates(filter: &QueryFilter) -> AppResult<Vec<SessionAggregate>> {
+    let (where_sql, args) = build_event_where(filter);
+    let q = format!(
+        "SELECT s.id,
+                s.title,
+                s.source_session_id,
+                COALESCE(MAX(e.provider), s.provider) AS provider,
+                COALESCE(MAX(e.model), s.model) AS model,
+                MAX(e.timestamp) AS last_seen_at,
+                COALESCE(SUM(e.total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(e.cost_usd), 0.0) AS cost_usd,
+                COUNT(*) AS event_count,
+                COUNT(DISTINCT e.model) AS model_switches,
+                COALESCE(MAX(e.input_tokens + e.cache_read_tokens + e.tool_tokens), 0) AS peak_context_tokens,
+                COALESCE(SUM(e.cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(e.cache_write_tokens), 0) AS cache_write_tokens
+         FROM sessions s
+         INNER JOIN usage_events e ON e.session_id = s.id
+         {where_sql}
+         GROUP BY s.id
+         ORDER BY last_seen_at ASC",
+    );
+
+    db::with_conn(|conn| {
+        let mut stmt = conn.prepare(&q)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+                Ok(SessionAggregate {
+                    session_id: r.get(0)?,
+                    label: session_label(r.get::<_, Option<String>>(1)?, r.get(2)?),
+                    provider: r.get(3)?,
+                    model: r.get(4)?,
+                    last_seen_at: r.get(5)?,
+                    total_tokens: r.get(6)?,
+                    cost_usd: r.get(7)?,
+                    event_count: r.get(8)?,
+                    model_switches: r.get(9)?,
+                    peak_context_tokens: r.get(10)?,
+                    cache_read_tokens: r.get(11)?,
+                    cache_write_tokens: r.get(12)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+}
+
+fn load_daily_aggregates(filter: &QueryFilter) -> AppResult<Vec<DailyAggregate>> {
+    let (where_sql, args) = build_event_where(filter);
+    let q = format!(
+        "SELECT date(e.timestamp) AS d,
+                COALESCE(SUM(e.total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(e.cost_usd), 0.0) AS cost_usd,
+                COALESCE(SUM(e.cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(e.cache_write_tokens), 0) AS cache_write_tokens,
+                COUNT(DISTINCT e.session_id) AS session_count,
+                COUNT(*) AS event_count,
+                COUNT(DISTINCT e.model) AS model_count
+         FROM usage_events e
+         {where_sql}
+         GROUP BY d
+         ORDER BY d ASC",
+    );
+
+    db::with_conn(|conn| {
+        let mut stmt = conn.prepare(&q)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+                Ok(DailyAggregate {
+                    date: r.get(0)?,
+                    total_tokens: r.get(1)?,
+                    cost_usd: r.get(2)?,
+                    cache_read_tokens: r.get(3)?,
+                    cache_write_tokens: r.get(4)?,
+                    session_count: r.get(5)?,
+                    event_count: r.get(6)?,
+                    model_count: r.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
 }
 
 pub fn overview(filter: &QueryFilter) -> AppResult<OverviewStats> {
@@ -481,10 +632,11 @@ pub fn timeseries(filter: &QueryFilter) -> AppResult<Vec<TimeseriesPoint>> {
                 COALESCE(SUM(output_tokens), 0),
                 COALESCE(SUM(reasoning_tokens), 0),
                 COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_write_tokens), 0),
                 COALESCE(SUM(total_tokens), 0),
                 COALESCE(SUM(cost_usd), 0)
-         FROM usage_events {where_sql}
-         GROUP BY d ORDER BY d ASC",
+          FROM usage_events {where_sql}
+          GROUP BY d ORDER BY d ASC",
     );
     db::with_conn(|conn| {
         let mut stmt = conn.prepare(&q)?;
@@ -496,8 +648,9 @@ pub fn timeseries(filter: &QueryFilter) -> AppResult<Vec<TimeseriesPoint>> {
                     output_tokens: r.get(2)?,
                     reasoning_tokens: r.get(3)?,
                     cache_read_tokens: r.get(4)?,
-                    total_tokens: r.get(5)?,
-                    cost_usd: r.get(6)?,
+                    cache_write_tokens: r.get(5)?,
+                    total_tokens: r.get(6)?,
+                    cost_usd: r.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -551,6 +704,296 @@ pub fn breakdown_by(
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     })
+}
+
+pub fn cache_efficiency(filter: &QueryFilter) -> AppResult<CacheEfficiencyReport> {
+    #[derive(Default)]
+    struct Agg {
+        cache_read_tokens: i64,
+        cache_write_tokens: i64,
+        total_tokens: i64,
+        cost_usd: f64,
+        cache_savings_usd: f64,
+        sessions: HashSet<i64>,
+    }
+
+    let (where_sql, args) = build_where(filter);
+    let q = format!(
+        "SELECT date(e.timestamp) AS d,
+                COALESCE(e.provider, '(none)') AS provider,
+                COALESCE(e.model, '(none)') AS model,
+                e.session_id,
+                COALESCE(e.cache_read_tokens, 0) AS cache_read_tokens,
+                COALESCE(e.cache_write_tokens, 0) AS cache_write_tokens,
+                COALESCE(e.total_tokens, 0) AS total_tokens,
+                COALESCE(e.cost_usd, 0.0) AS cost_usd
+         FROM usage_events e
+         {where_sql}
+         ORDER BY d ASC, provider ASC, model ASC",
+    );
+
+    db::with_conn(|conn| {
+        let mut stmt = conn.prepare(&q)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args.iter()), |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, f64>(7)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut series: HashMap<String, Agg> = HashMap::new();
+        let mut by_provider: HashMap<String, Agg> = HashMap::new();
+        let mut by_model: HashMap<String, Agg> = HashMap::new();
+
+        for (date, provider, model, session_id, cache_read, cache_write, total_tokens, cost_usd) in rows {
+            let savings = cache_savings_for(Some(provider.as_str()), Some(model.as_str()), cache_read);
+            let entry = series.entry(date).or_default();
+            entry.cache_read_tokens += cache_read;
+            entry.cache_write_tokens += cache_write;
+            entry.total_tokens += total_tokens;
+            entry.cost_usd += cost_usd;
+            entry.cache_savings_usd += savings;
+            if let Some(session_id) = session_id {
+                entry.sessions.insert(session_id);
+            }
+
+            let entry = by_provider.entry(provider).or_default();
+            entry.cache_read_tokens += cache_read;
+            entry.cache_write_tokens += cache_write;
+            entry.total_tokens += total_tokens;
+            entry.cost_usd += cost_usd;
+            entry.cache_savings_usd += savings;
+            if let Some(session_id) = session_id {
+                entry.sessions.insert(session_id);
+            }
+
+            let entry = by_model.entry(model).or_default();
+            entry.cache_read_tokens += cache_read;
+            entry.cache_write_tokens += cache_write;
+            entry.total_tokens += total_tokens;
+            entry.cost_usd += cost_usd;
+            entry.cache_savings_usd += savings;
+            if let Some(session_id) = session_id {
+                entry.sessions.insert(session_id);
+            }
+        }
+
+        let mut series_out: Vec<CacheEfficiencyPoint> = series
+            .into_iter()
+            .map(|(date, a)| CacheEfficiencyPoint {
+                date,
+                cache_read_tokens: a.cache_read_tokens,
+                cache_write_tokens: a.cache_write_tokens,
+                cache_savings_usd: a.cache_savings_usd,
+            })
+            .collect();
+        series_out.sort_by(|a, b| a.date.cmp(&b.date));
+
+        let mut provider_out: Vec<CacheEfficiencyRow> = by_provider
+            .into_iter()
+            .map(|(key, a)| CacheEfficiencyRow {
+                key,
+                cache_read_tokens: a.cache_read_tokens,
+                cache_write_tokens: a.cache_write_tokens,
+                cache_savings_usd: a.cache_savings_usd,
+                total_tokens: a.total_tokens,
+                cost_usd: a.cost_usd,
+                sessions_count: a.sessions.len() as i64,
+            })
+            .collect();
+        provider_out.sort_by(|a, b| b.cache_savings_usd.total_cmp(&a.cache_savings_usd));
+
+        let mut model_out: Vec<CacheEfficiencyRow> = by_model
+            .into_iter()
+            .map(|(key, a)| CacheEfficiencyRow {
+                key,
+                cache_read_tokens: a.cache_read_tokens,
+                cache_write_tokens: a.cache_write_tokens,
+                cache_savings_usd: a.cache_savings_usd,
+                total_tokens: a.total_tokens,
+                cost_usd: a.cost_usd,
+                sessions_count: a.sessions.len() as i64,
+            })
+            .collect();
+        model_out.sort_by(|a, b| b.cache_savings_usd.total_cmp(&a.cache_savings_usd));
+
+        Ok(CacheEfficiencyReport {
+            series: series_out,
+            by_provider: provider_out,
+            by_model: model_out,
+        })
+    })
+}
+
+pub fn anomaly_highlights(filter: &QueryFilter) -> AppResult<Vec<AnomalyHighlight>> {
+    let sessions = load_session_aggregates(filter)?;
+    let daily = load_daily_aggregates(filter)?;
+    const WINDOW: usize = 7;
+
+    let mut out: Vec<AnomalyHighlight> = Vec::new();
+
+    for (idx, s) in sessions.iter().enumerate() {
+        if idx < WINDOW {
+            continue;
+        }
+        let window = &sessions[(idx - WINDOW)..idx];
+        let baseline = rolling_median(&window.iter().map(|x| x.total_tokens).collect::<Vec<_>>());
+        if baseline <= 0.0 {
+            continue;
+        }
+        let ratio = s.total_tokens as f64 / baseline;
+        if ratio < 2.0 {
+            continue;
+        }
+        let limit = pricing::context_window_tokens(s.provider.as_deref().unwrap_or(""), s.model.as_deref().unwrap_or(""));
+        let peak_pct = context_pct(s.peak_context_tokens, limit);
+        let reason = if s.model_switches > 1 {
+            "model switching"
+        } else if peak_pct >= 80.0 {
+            "context saturation"
+        } else if s.cache_write_tokens > s.cache_read_tokens && s.cache_write_tokens > 0 {
+            "cache rebuilds"
+        } else if s.event_count >= 10 {
+            "retry-heavy"
+        } else {
+            "volume spike"
+        };
+        out.push(AnomalyHighlight {
+            kind: "session".into(),
+            label: s.label.clone(),
+            session_id: Some(s.session_id),
+            date: s.last_seen_at.clone().map(|v| v.chars().take(10).collect()),
+            provider: s.provider.clone(),
+            model: s.model.clone(),
+            total_tokens: s.total_tokens,
+            baseline_tokens: baseline.round() as i64,
+            ratio,
+            event_count: s.event_count,
+            model_switches: s.model_switches,
+            peak_context_tokens: s.peak_context_tokens,
+            peak_context_pct: peak_pct,
+            cache_read_tokens: s.cache_read_tokens,
+            cache_write_tokens: s.cache_write_tokens,
+            cost_usd: s.cost_usd,
+            reason: reason.into(),
+        });
+    }
+
+    for (idx, d) in daily.iter().enumerate() {
+        if idx < WINDOW {
+            continue;
+        }
+        let window = &daily[(idx - WINDOW)..idx];
+        let baseline = rolling_median(&window.iter().map(|x| x.total_tokens).collect::<Vec<_>>());
+        if baseline <= 0.0 {
+            continue;
+        }
+        let ratio = d.total_tokens as f64 / baseline;
+        if ratio < 2.0 {
+            continue;
+        }
+        let reason = if d.cache_write_tokens > d.cache_read_tokens && d.cache_write_tokens > 0 {
+            "cache churn"
+        } else if d.session_count >= 10 {
+            "session surge"
+        } else if d.model_count > 1 {
+            "model switching"
+        } else {
+            "volume spike"
+        };
+        out.push(AnomalyHighlight {
+            kind: "day".into(),
+            label: d.date.clone(),
+            session_id: None,
+            date: Some(d.date.clone()),
+            provider: None,
+            model: None,
+            total_tokens: d.total_tokens,
+            baseline_tokens: baseline.round() as i64,
+            ratio,
+            event_count: d.event_count,
+            model_switches: d.model_count,
+            peak_context_tokens: 0,
+            peak_context_pct: 0.0,
+            cache_read_tokens: d.cache_read_tokens,
+            cache_write_tokens: d.cache_write_tokens,
+            cost_usd: d.cost_usd,
+            reason: reason.into(),
+        });
+    }
+
+    out.sort_by(|a, b| b.ratio.total_cmp(&a.ratio).then(b.total_tokens.cmp(&a.total_tokens)));
+    out.truncate(12);
+    Ok(out)
+}
+
+pub fn context_utilization(filter: &QueryFilter) -> AppResult<ContextUtilizationReport> {
+    let sessions = load_session_aggregates(filter)?;
+    let all_rows: Vec<ContextUtilizationRow> = sessions
+        .into_iter()
+        .map(|s| {
+            let limit = pricing::context_window_tokens(s.provider.as_deref().unwrap_or(""), s.model.as_deref().unwrap_or(""));
+            ContextUtilizationRow {
+                session_id: s.session_id,
+                label: s.label,
+                provider: s.provider,
+                model: s.model,
+                last_seen_at: s.last_seen_at,
+                peak_context_tokens: s.peak_context_tokens,
+                context_window_tokens: limit,
+                utilization_pct: context_pct(s.peak_context_tokens, limit),
+                event_count: s.event_count,
+                model_switches: s.model_switches,
+                cost_usd: s.cost_usd,
+            }
+        })
+        .collect();
+    let mut rows = all_rows.clone();
+    rows.sort_by(|a, b| b.utilization_pct.total_cmp(&a.utilization_pct).then(b.peak_context_tokens.cmp(&a.peak_context_tokens)));
+    rows.truncate(100);
+
+    let mut buckets: HashMap<String, (Vec<f64>, i64)> = HashMap::new();
+    for row in &all_rows {
+        let Some(limit) = row.context_window_tokens.filter(|v| *v > 0) else {
+            continue;
+        };
+        let date = row
+            .last_seen_at
+            .as_deref()
+            .and_then(|s| s.get(0..10))
+            .unwrap_or("unknown")
+            .to_string();
+        let bucket = buckets.entry(date).or_insert_with(|| (Vec::new(), 0));
+        bucket.0.push((row.peak_context_tokens.max(0) as f64 / limit as f64) * 100.0);
+        if row.utilization_pct >= 80.0 {
+            bucket.1 += 1;
+        }
+    }
+
+    let mut trend: Vec<ContextUtilizationPoint> = buckets
+        .into_iter()
+        .map(|(date, (vals, over_80))| {
+            let avg = if vals.is_empty() { 0.0 } else { vals.iter().sum::<f64>() / vals.len() as f64 };
+            let max = vals.into_iter().fold(0.0, f64::max);
+            ContextUtilizationPoint {
+                date,
+                avg_utilization_pct: avg,
+                max_utilization_pct: max,
+                sessions_over_80: over_80,
+            }
+        })
+        .collect();
+    trend.sort_by(|a, b| a.date.cmp(&b.date));
+
+    Ok(ContextUtilizationReport { sessions: rows, trend })
 }
 
 pub fn list_sessions(filter: &QueryFilter) -> AppResult<Vec<Session>> {

@@ -3,13 +3,17 @@
 
 import type {
   AppSettings,
+  AnomalyHighlight,
+  CacheEfficiencyReport,
   Breakdown,
   CursorConnectionStatus,
+  ContextUtilizationReport,
   ModelPricing,
   OverviewStats,
   QueryFilter,
   ScanResult,
   Session,
+  SessionSwapQuote,
   Source,
   TimeseriesPoint,
   UsageEvent,
@@ -86,8 +90,23 @@ export const getSessionDetail = (id: number) =>
   invoke<Session | null>("get_session_detail", { id });
 export const getSessionEvents = (id: number) =>
   invoke<UsageEvent[]>("get_session_events", { id });
+export const simulateSessionSwap = (
+  sessionId: number,
+  targetProvider: string,
+  targetModel: string,
+) => invoke<SessionSwapQuote | null>("simulate_session_swap", {
+  session_id: sessionId,
+  target_provider: targetProvider,
+  target_model: targetModel,
+});
 export const getBreakdown = (filter: QueryFilter, dimension: string) =>
   invoke<Breakdown[]>("get_breakdown", { filter, dimension });
+export const getAnomalyHighlights = (filter: QueryFilter) =>
+  invoke<AnomalyHighlight[]>("get_anomaly_highlights", { filter });
+export const getCacheEfficiency = (filter: QueryFilter) =>
+  invoke<CacheEfficiencyReport>("get_cache_efficiency", { filter });
+export const getContextUtilization = (filter: QueryFilter) =>
+  invoke<ContextUtilizationReport>("get_context_utilization", { filter });
 export const listEvents = (filter: QueryFilter) =>
   invoke<UsageEvent[]>("list_events", { filter });
 export const countEvents = () => invoke<number>("count_events");

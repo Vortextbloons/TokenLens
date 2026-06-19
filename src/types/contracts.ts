@@ -81,6 +81,7 @@ export interface ModelPricing {
   reasoning_price_per_million: number;
   cache_read_price_per_million: number;
   cache_write_price_per_million: number;
+  context_window_tokens: number | null;
   currency: string;
   effective_date: string | null;
   is_local: boolean;
@@ -130,8 +131,93 @@ export interface TimeseriesPoint {
   output_tokens: number;
   reasoning_tokens: number;
   cache_read_tokens: number;
+  cache_write_tokens: number;
   total_tokens: number;
   cost_usd: number;
+}
+
+export interface CacheEfficiencyPoint {
+  date: string;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cache_savings_usd: number;
+}
+
+export interface CacheEfficiencyRow {
+  key: string;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cache_savings_usd: number;
+  total_tokens: number;
+  cost_usd: number;
+  sessions_count: number;
+}
+
+export interface CacheEfficiencyReport {
+  series: CacheEfficiencyPoint[];
+  by_provider: CacheEfficiencyRow[];
+  by_model: CacheEfficiencyRow[];
+}
+
+export interface AnomalyHighlight {
+  kind: "session" | "day" | string;
+  label: string;
+  session_id: number | null;
+  date: string | null;
+  provider: string | null;
+  model: string | null;
+  total_tokens: number;
+  baseline_tokens: number;
+  ratio: number;
+  event_count: number;
+  model_switches: number;
+  peak_context_tokens: number;
+  peak_context_pct: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cost_usd: number;
+  reason: string;
+}
+
+export interface ContextUtilizationRow {
+  session_id: number;
+  label: string;
+  provider: string | null;
+  model: string | null;
+  last_seen_at: string | null;
+  peak_context_tokens: number;
+  context_window_tokens: number | null;
+  utilization_pct: number;
+  event_count: number;
+  model_switches: number;
+  cost_usd: number;
+}
+
+export interface ContextUtilizationPoint {
+  date: string;
+  avg_utilization_pct: number;
+  max_utilization_pct: number;
+  sessions_over_80: number;
+}
+
+export interface ContextUtilizationReport {
+  sessions: ContextUtilizationRow[];
+  trend: ContextUtilizationPoint[];
+}
+
+export interface SessionSwapQuote {
+  session_id: number;
+  current_provider: string | null;
+  current_model: string | null;
+  target_provider: string;
+  target_model: string;
+  current_cost_usd: number;
+  simulated_cost_usd: number;
+  delta_usd: number;
+  delta_pct: number;
+  target_context_window_tokens: number | null;
+  target_pricing_status: string;
+  events_count: number;
 }
 
 export interface Breakdown {

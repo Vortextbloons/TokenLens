@@ -174,6 +174,8 @@ pub struct ModelPricing {
     pub reasoning_price_per_million: f64,
     pub cache_read_price_per_million: f64,
     pub cache_write_price_per_million: f64,
+    #[serde(default)]
+    pub context_window_tokens: Option<i64>,
     pub currency: String,
     pub effective_date: Option<String>,
     pub is_local: bool,
@@ -268,8 +270,109 @@ pub struct TimeseriesPoint {
     pub output_tokens: i64,
     pub reasoning_tokens: i64,
     pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
     pub total_tokens: i64,
     pub cost_usd: f64,
+}
+
+/// Cache efficiency trend point.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEfficiencyPoint {
+    pub date: String, // YYYY-MM-DD
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub cache_savings_usd: f64,
+}
+
+/// Cache efficiency breakdown row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEfficiencyRow {
+    pub key: String,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub cache_savings_usd: f64,
+    pub total_tokens: i64,
+    pub cost_usd: f64,
+    pub sessions_count: i64,
+}
+
+/// Cache efficiency report payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheEfficiencyReport {
+    pub series: Vec<CacheEfficiencyPoint>,
+    pub by_provider: Vec<CacheEfficiencyRow>,
+    pub by_model: Vec<CacheEfficiencyRow>,
+}
+
+/// High-level anomaly/highlight row for spikes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnomalyHighlight {
+    pub kind: String, // session | day
+    pub label: String,
+    pub session_id: Option<i64>,
+    pub date: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub total_tokens: i64,
+    pub baseline_tokens: i64,
+    pub ratio: f64,
+    pub event_count: i64,
+    pub model_switches: i64,
+    pub peak_context_tokens: i64,
+    pub peak_context_pct: f64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub cost_usd: f64,
+    pub reason: String,
+}
+
+/// Context utilization row for a session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextUtilizationRow {
+    pub session_id: i64,
+    pub label: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub last_seen_at: Option<String>,
+    pub peak_context_tokens: i64,
+    pub context_window_tokens: Option<i64>,
+    pub utilization_pct: f64,
+    pub event_count: i64,
+    pub model_switches: i64,
+    pub cost_usd: f64,
+}
+
+/// Context utilization trend point.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextUtilizationPoint {
+    pub date: String,
+    pub avg_utilization_pct: f64,
+    pub max_utilization_pct: f64,
+    pub sessions_over_80: i64,
+}
+
+/// Context utilization report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextUtilizationReport {
+    pub sessions: Vec<ContextUtilizationRow>,
+    pub trend: Vec<ContextUtilizationPoint>,
+}
+
+/// Session model-swap cost quote.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSwapQuote {
+    pub session_id: i64,
+    pub current_provider: Option<String>,
+    pub current_model: Option<String>,
+    pub target_provider: String,
+    pub target_model: String,
+    pub current_cost_usd: f64,
+    pub simulated_cost_usd: f64,
+    pub delta_usd: f64,
+    pub delta_pct: f64,
+    pub target_context_window_tokens: Option<i64>,
+    pub target_pricing_status: String,
+    pub events_count: i64,
 }
 
 /// Filter for queries (date range + dimensions).

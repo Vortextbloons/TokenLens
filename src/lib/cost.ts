@@ -1,10 +1,17 @@
 // Mirrors the Rust pricing engine for mock/dev mode parity.
 
 import type { ModelPricing } from "@/types/contracts";
+import type { UsageEvent } from "@/types/contracts";
+import contextWindows from "../../pricing/context-windows.json";
 
 type ProviderAlias = {
   nativeProvider: string;
   modelMap?: Record<string, string>;
+};
+
+type ContextWindowFallback = {
+  model: string;
+  context_window_tokens: number;
 };
 
 const AGGREGATOR_ALIASES: Record<string, ProviderAlias[]> = {
@@ -32,6 +39,8 @@ const AGGREGATOR_ALIASES: Record<string, ProviderAlias[]> = {
   ],
 };
 
+const CONTEXT_WINDOW_FALLBACKS = contextWindows as ContextWindowFallback[];
+
 export function resolvePricing(
   provider: string,
   model: string,
@@ -55,6 +64,17 @@ export function resolvePricing(
     }
   }
   return null;
+}
+
+export function resolveContextWindow(
+  provider: string,
+  model: string,
+  table: ModelPricing[],
+): number | null {
+  const exact = resolvePricing(provider, model, table);
+  if (exact?.context_window_tokens) return exact.context_window_tokens;
+  const m = model.toLowerCase();
+  return CONTEXT_WINDOW_FALLBACKS.find((row) => m.startsWith(row.model))?.context_window_tokens ?? null;
 }
 
 function estimatePricing(
@@ -88,6 +108,7 @@ function estimatePricing(
     reasoning_price_per_million: avg((r) => r.reasoning_price_per_million),
     cache_read_price_per_million: avg((r) => r.cache_read_price_per_million),
     cache_write_price_per_million: avg((r) => r.cache_write_price_per_million),
+    context_window_tokens: null,
     currency: rows[0].currency,
     effective_date: null,
     is_local: false,
@@ -158,4 +179,38 @@ export function cacheSavingsForEvent(
   if (!p || cacheRead <= 0) return 0;
   const delta = Math.max(0, p.input_price_per_million - p.cache_read_price_per_million);
   return (cacheRead * delta) / 1_000_000;
+}
+
+export function peakContextForEvents(events: UsageEvent[]): number {
+  let peak = 0;
+  for (const e of events) {
+    peak = Math.max(peak, e.input_tokens + e.cache_read_tokens + e.tool_tokens);
+  }
+  return peak;
+}
+
+export function quoteSessionSwap(
+  events: UsageEvent[],
+  targetProvider: string,
+  targetModel: string,
+  table: ModelPricing[],
+): { simulated_cost_usd: number; target_pricing_status: string } {
+  let simulated_cost_usd = 0;
+  let status: "priced" | "estimated" | "unpriced" = "priced";
+  for (const e of events) {
+    const { cost, unpriced, estimated } = computeEventCost(
+      targetProvider,
+      targetModel,
+      e.input_tokens,
+      e.output_tokens,
+      e.reasoning_tokens,
+      e.cache_read_tokens,
+      e.cache_write_tokens,
+      table,
+    );
+    simulated_cost_usd += cost;
+    if (unpriced) status = "unpriced";
+    else if (estimated && status !== "unpriced") status = "estimated";
+  }
+  return { simulated_cost_usd, target_pricing_status: status };
 }

@@ -494,6 +494,9 @@ export function Settings() {
       reasoning_price_per_million: Number(r.reasoning_price_per_million ?? 0),
       cache_read_price_per_million: Number(r.cache_read_price_per_million ?? 0),
       cache_write_price_per_million: Number(r.cache_write_price_per_million ?? 0),
+      context_window_tokens: r.context_window_tokens == null || r.context_window_tokens === ""
+        ? null
+        : Number(r.context_window_tokens),
       currency: String(r.currency ?? "USD"),
       effective_date: r.effective_date ?? null,
       is_local: Boolean(r.is_local),
@@ -782,6 +785,7 @@ export function Settings() {
                     <th className="text-right p-3">Reasoning / 1M</th>
                     <th className="text-right p-3">Cache read / 1M</th>
                     <th className="text-right p-3">Cache write / 1M</th>
+                    <th className="text-right p-3">Context</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -795,6 +799,9 @@ export function Settings() {
                       <td className="p-3 text-right tabular-nums">{formatUsd(p.reasoning_price_per_million)}</td>
                       <td className="p-3 text-right tabular-nums">{formatUsd(p.cache_read_price_per_million)}</td>
                       <td className="p-3 text-right tabular-nums">{formatUsd(p.cache_write_price_per_million)}</td>
+                      <td className="p-3 text-right tabular-nums text-muted-foreground">
+                        {p.context_window_tokens ? formatNumber(p.context_window_tokens) : "—"}
+                      </td>
                       <td className="p-3">
                         <div className="flex items-center gap-1">
                           <Button variant="ghost" size="sm" onClick={() => setEditingPricing({ ...p })}>Edit</Button>
@@ -806,11 +813,11 @@ export function Settings() {
                 </tbody>
               </table>
               <div className="p-3 border-t">
-                <Button onClick={() => setEditingPricing({
+                  <Button onClick={() => setEditingPricing({
                   id: null, provider: "openai", model: "",
                   input_price_per_million: 0, output_price_per_million: 0,
                   reasoning_price_per_million: 0, cache_read_price_per_million: 0,
-                  cache_write_price_per_million: 0, currency: "USD",
+                  cache_write_price_per_million: 0, context_window_tokens: null, currency: "USD",
                   effective_date: null, is_local: false, source: "manual", updated_at: "",
                 })}>
                   <Plus className="h-3.5 w-3.5" /> Add pricing row
@@ -852,6 +859,19 @@ export function Settings() {
                       />
                     </div>
                   ))}
+                  <div>
+                    <Label>Context window</Label>
+                    <Input
+                      type="number"
+                      step="1"
+                      value={editingPricing.context_window_tokens ?? ""}
+                      onChange={(e) => setEditingPricing({
+                        ...editingPricing,
+                        context_window_tokens: e.target.value === "" ? null : Number(e.target.value),
+                      })}
+                      placeholder="e.g. 200000"
+                    />
+                  </div>
                   <div className="flex items-end gap-2">
                     <Switch checked={editingPricing.is_local} onCheckedChange={(v) => setEditingPricing({ ...editingPricing, is_local: v })} id="local" />
                     <Label htmlFor="local">Local model ($0)</Label>

@@ -19,6 +19,7 @@ const SessionDetail = lazy(() =>
 );
 const Projects = lazy(() => import("@/pages/Projects").then((m) => ({ default: m.Projects })));
 const Models = lazy(() => import("@/pages/Models").then((m) => ({ default: m.Models })));
+const Insights = lazy(() => import("@/pages/Insights").then((m) => ({ default: m.Insights })));
 const Providers = lazy(() =>
   import("@/pages/Providers").then((m) => ({ default: m.Providers })),
 );
@@ -58,6 +59,7 @@ export default function App() {
                   <Route path="/sessions/:id" element={<SessionDetail />} />
                   <Route path="/projects" element={<Projects />} />
                   <Route path="/models" element={<Models />} />
+                  <Route path="/insights" element={<Insights />} />
                   <Route path="/providers" element={<Providers />} />
                   <Route path="/costs" element={<Costs />} />
                   <Route path="/timeline" element={<Timeline />} />

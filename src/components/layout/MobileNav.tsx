@@ -1,10 +1,11 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, MessagesSquare, Clock, Settings } from "lucide-react";
+import { LayoutDashboard, MessagesSquare, Clock, Settings, TrendingUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
   { to: "/", label: "Home", icon: LayoutDashboard, end: true },
   { to: "/sessions", label: "Sessions", icon: MessagesSquare },
+  { to: "/insights", label: "Insights", icon: TrendingUp },
   { to: "/timeline", label: "Timeline", icon: Clock },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
